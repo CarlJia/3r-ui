@@ -1,0 +1,30 @@
+[package]
+name = "three-r-ui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Self-hosted Rust xray-core management panel"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "three_r_ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "3r-ui"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+rand = "0.8"
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }

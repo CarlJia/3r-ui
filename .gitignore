@@ -1,0 +1,16 @@
+# Build outputs
+/target
+**/*.rs.bk
+
+# Runtime data
+/data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/3r-ui.lock   # the single-instance flock file inside data_dir
+/initial_password
+*.log
+
+# OS
+.DS_Store
