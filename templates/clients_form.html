@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 用户</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card, .pubkey { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+      .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+      .btn-primary { background: #3b82f6 !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    header a { color: #3b82f6; text-decoration: none; font-size: 13px; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    input {
+      width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px;
+      border: 1px solid #d5d9de; background: #fff; color: inherit; margin-bottom: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .uuid {
+      background: #f4f5f7; border: 1px solid #e3e6ea; border-radius: 8px;
+      padding: 10px 12px; font-size: 12px; word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 14px;
+    }
+    .actions { display: flex; gap: 10px; }
+    button {
+      padding: 9px 16px; font-size: 14px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #2f6fd8; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    .error {
+      background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
+      border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{% match client %}{% when Some with (_) %}编辑用户{% when None %}添加用户{% endmatch %}</h1>
+    <a href="/admin/clients">返回列表</a>
+  </header>
+  <main>
+    {% if let Some(err) = error %}
+    <div class="error" role="alert">{{ err }}</div>
+    {% endif %}
+
+    {% if let Some(c) = client %}
+    <section class="card">
+      <h2>UUID</h2>
+      <p class="hint">UUID 在创建时生成且不可修改。</p>
+      <div class="uuid">{{ c.uuid }}</div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>用户信息</h2>
+      <p class="hint">名称仅作展示用途；配额单位 GB，留空或 0 表示不限；过期时间可选。</p>
+      <form method="post" action="{% match client %}{% when Some with (c) %}/admin/clients/{{ c.id }}{% when None %}/admin/clients{% endmatch %}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label for="name">名称</label>
+        <input id="name" name="name" maxlength="64"
+               value="{% match client %}{% when Some with (c) %}{{ c.name }}{% when None %}{% endmatch %}">
+
+        <label for="quota_gb">配额（GB）</label>
+        <input id="quota_gb" name="quota_gb" type="number" min="0" step="1"
+               value="{% match client %}{% when Some with (c) %}{{ c.quota_gb }}{% when None %}0{% endmatch %}">
+
+        <label for="expiry">过期时间（YYYY-MM-DD，留空表示永不过期）</label>
+        <input id="expiry" name="expiry" type="text" placeholder="2026-12-31"
+               value="{% match client %}{% when Some with (c) %}{% match c.expiry_date %}{% when Some with (d) %}{{ d }}{% when None %}{% endmatch %}{% when None %}{% endmatch %}">
+
+        <div class="actions">
+          <button class="btn-primary" type="submit">保存并重载</button>
+          <a class="btn-secondary" href="/admin/clients" style="text-decoration:none; padding:9px 16px; font-size:14px; font-weight:600; border-radius:8px;">取消</a>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

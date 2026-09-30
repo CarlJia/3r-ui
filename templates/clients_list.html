@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 用户管理</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card, .pubkey { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+      .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+      .btn-primary { background: #3b82f6 !important; }
+      .btn-danger { background: #4a2226 !important; color: #ff9b9b !important; }
+      table { border-color: #2c3037 !important; }
+      th, td { border-color: #2c3037 !important; }
+      .status-active { background: #16351f !important; color: #6ee7a0 !important; }
+      .status-disabled { background: #3a1f22 !important; color: #ff9b9b !important; }
+      .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
+      .uuid { background: #16181d !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    header a { color: #3b82f6; text-decoration: none; font-size: 13px; }
+    main { max-width: 960px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .card-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+    .card-head .btn { margin: 0; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    .empty { font-size: 13px; opacity: .6; padding: 12px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      text-align: left; padding: 8px 10px; border-bottom: 1px solid #eceef1;
+      vertical-align: middle;
+    }
+    th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase; }
+    .uuid {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; background: #f4f5f7; padding: 2px 6px;
+      border-radius: 4px; display: inline-block;
+    }
+    .status {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+    }
+    .status-active { background: #e3f5e9; color: #1a7f42; }
+    .status-disabled { background: #fdecec; color: #a4262c; }
+    .btn {
+      padding: 6px 12px; font-size: 13px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none;
+      display: inline-block;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #2f6fd8; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    .btn-danger { background: #fdecec; color: #a4262c; }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .row-actions form { margin: 0; display: inline; }
+    .muted { opacity: .6; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>用户管理</h1>
+    <a href="/admin">返回控制台</a>
+  </header>
+  <main>
+    {% if !has_inbound %}
+    <div class="card">
+      <h2 style="margin:0 0 4px; font-size:15px; font-weight:600">尚未创建入站</h2>
+      <p class="hint">请先在「入站配置」页面创建一个入站，再添加用户。</p>
+    </div>
+    {% endif %}
+
+    <section class="card">
+      <div class="card-head">
+        <h2>VLESS 用户</h2>
+        {% if has_inbound %}
+        <a class="btn btn-primary" href="/admin/clients/new">添加用户</a>
+        {% endif %}
+      </div>
+      <p class="hint">每个用户对应一个 VLESS UUID，配额单位 GB；过期后将自动从 xray 配置中剔除。</p>
+
+      {% if clients.is_empty() %}
+      <p class="empty">还没有用户。点击右上角「添加用户」创建第一个。</p>
+      {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>UUID</th>
+            <th>配额</th>
+            <th>过期</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in clients %}
+          <tr>
+            <td>{% if c.name.is_empty() %}<span class="muted">未命名</span>{% else %}{{ c.name }}{% endif %}</td>
+            <td><span class="uuid">{{ c.uuid[..8] }}…</span></td>
+            <td>{% if c.quota_gb > 0 %}{{ c.quota_gb }} GB{% else %}<span class="muted">不限</span>{% endif %}</td>
+            <td>{% match c.expiry_date %}{% when Some with (d) %}{{ d }}{% when None %}<span class="muted">永不过期</span>{% endmatch %}</td>
+            <td>
+              <span class="status {% if c.active %}status-active{% else %}status-disabled{% endif %}">
+                {% if c.active %}active{% else %}disabled{% endif %}
+              </span>
+            </td>
+            <td>
+              <div class="row-actions">
+                <a class="btn btn-secondary" href="/admin/clients/{{ c.id }}/edit">编辑</a>
+                <form method="post" action="/admin/clients/{{ c.id }}/delete">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <button class="btn btn-danger" type="submit">删除</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

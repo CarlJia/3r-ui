@@ -1,6 +1,7 @@
 //! HTTP layer: router, shared state, auth, and the authenticated admin shell.
 
 pub mod auth;
+pub mod clients;
 pub mod inbound;
 pub mod middleware;
 
@@ -38,6 +39,12 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/inbound", get(inbound::show))
         .route("/admin/inbound", post(inbound::save))
         .route("/admin/inbound/delete", post(inbound::delete))
+        .route("/admin/clients", get(clients::list))
+        .route("/admin/clients/new", get(clients::new_form))
+        .route("/admin/clients", post(clients::create))
+        .route("/admin/clients/:id/edit", get(clients::edit_form))
+        .route("/admin/clients/:id", post(clients::update))
+        .route("/admin/clients/:id/delete", post(clients::delete))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_session,
