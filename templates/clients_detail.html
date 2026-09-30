@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 分享链接</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+      .uri-box, .meta { background: #16181d !important; border-color: #2c3037 !important; color: #e6e8eb !important; }
+      .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+      .btn-primary { background: #3b82f6 !important; }
+      .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
+      .status-active { background: #16351f !important; color: #6ee7a0 !important; }
+      .status-disabled { background: #3a1f22 !important; color: #ff9b9b !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    header a { color: #3b82f6; text-decoration: none; font-size: 13px; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 12px; font-size: 13px; opacity: .65; }
+    .uri-box {
+      background: #f4f5f7; border: 1px solid #e3e6ea; border-radius: 8px;
+      padding: 12px; font-size: 13px; word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .meta {
+      background: #f4f5f7; border: 1px solid #e3e6ea; border-radius: 8px;
+      padding: 10px 12px; font-size: 12px; line-height: 1.6;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .meta b { color: #1c2024; }
+    .qr-card { text-align: center; }
+    .qr-card img {
+      max-width: 280px; height: auto; border: 1px solid #e3e6ea;
+      padding: 8px; background: #fff; border-radius: 8px;
+    }
+    .btn {
+      padding: 8px 14px; font-size: 13px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none;
+      display: inline-block;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .error {
+      background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
+      border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
+    }
+    .status {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+    }
+    .status-active { background: #e3f5e9; color: #1a7f42; }
+    .status-disabled { background: #fdecec; color: #a4262c; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>分享链接</h1>
+    <a href="/admin/clients">返回列表</a>
+  </header>
+  <main>
+    {% if let Some(w) = warning %}
+    <div class="error" role="alert">{{ w }}</div>
+    {% endif %}
+
+    <section class="card">
+      <h2>{% if client.name.is_empty() %}未命名用户{% else %}{{ client.name }}{% endif %}</h2>
+      <p class="hint">
+        状态 <span class="status {% if client.active %}status-active{% else %}status-disabled{% endif %}">
+          {% if client.active %}active{% else %}disabled{% endif %}
+        </span>
+        &nbsp;·&nbsp; UUID <code>{{ client.uuid }}</code>
+      </p>
+
+      <div class="meta">
+        <b>入站端口</b> {{ inbound.listen_port }} ·
+        <b>SNI</b> {{ inbound.sni }} ·
+        <b>shortId</b> {{ inbound.short_id }}<br>
+        <b>REALITY 公钥</b> {{ inbound.public_key }}<br>
+        <b>客户端指纹</b> chrome (uTLS)
+      </div>
+    </section>
+
+    <section class="card qr-card">
+      <h2>二维码</h2>
+      <p class="hint">手机扫码直接导入 v2rayN / NekoBox 等客户端。</p>
+      <img src="{{ qr_path }}" width="280" height="280" alt="VLESS QR">
+      <div class="actions" style="justify-content:center">
+        <a class="btn btn-secondary" href="{{ qr_path }}" download="vless-{{ client.uuid }}.png">下载 PNG</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>VLESS URI</h2>
+      <p class="hint">点击「复制」后粘贴到客户端；或在其它工具导入此字符串。</p>
+      <div class="uri-box" id="uri">{{ uri }}</div>
+      <div class="actions">
+        <button class="btn btn-primary" type="button" onclick="copyUri()">复制</button>
+        <a class="btn btn-secondary" href="/admin/clients/{{ client.id }}/edit">编辑用户</a>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function copyUri() {
+      const text = document.getElementById('uri').textContent;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          flashButton();
+        });
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); flashButton(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    }
+    function flashButton() {
+      const b = document.querySelector('button[onclick="copyUri()"]');
+      if (!b) return;
+      const orig = b.textContent;
+      b.textContent = '已复制 ✓';
+      setTimeout(() => { b.textContent = orig; }, 1200);
+    }
+  </script>
+</body>
+</html>

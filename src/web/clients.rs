@@ -40,6 +40,16 @@ struct ClientsFormTemplate {
     error: Option<String>,
 }
 
+#[derive(Template)]
+#[template(path = "clients_detail.html", escape = "html")]
+struct ClientsDetailTemplate {
+    client: ClientView,
+    inbound: Inbound,
+    uri: String,
+    qr_path: String,
+    warning: Option<String>,
+}
+
 /// What the templates render. Decoupled from [`Client`] so we can layer in
 /// human-friendly formatting (quota GB, expiry as a date string) without
 /// changing the storage model.
@@ -207,6 +217,150 @@ pub async fn edit_form(
             not_found_response()
         }
     }
+}
+
+/// `GET /admin/clients/:id` — share / QR detail page.
+pub async fn detail(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    Path(id): Path<i64>,
+) -> Response {
+    let client = match load_client(&state.pool, id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return not_found_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "client lookup failed for detail");
+            return not_found_response();
+        }
+    };
+    let inbound = match load_active_inbound(&state.pool).await {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            return render_detail_error(&jar, "尚未创建入站，无法生成分享链接".to_string()).await
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "inbound lookup failed for detail");
+            return not_found_response();
+        }
+    };
+
+    let public_host = state.config.public_host.clone();
+    let warning = if public_host.is_empty() {
+        Some("尚未配置 PUBLIC_HOST 环境变量，链接中的 host 占位为示例地址，客户端无法直接使用。请在面板环境配置 PUBLIC_HOST 后重新打开此页面。".to_string())
+    } else {
+        None
+    };
+    let host = if public_host.is_empty() {
+        "your-server.example.com".to_string()
+    } else {
+        public_host
+    };
+
+    let uri = crate::share::vless::build_uri(&client, &inbound, &host);
+    let qr_path = format!("/admin/clients/{id}/qr.png?host={}", url_encode(&host));
+
+    let html = ClientsDetailTemplate {
+        client: ClientView::from(&client),
+        inbound,
+        uri,
+        qr_path,
+        warning,
+    }
+    .render()
+    .unwrap_or_else(|e| format!("template error: {e}"));
+    page(jar, StatusCode::OK, html)
+}
+
+/// `GET /admin/clients/:id/qr.png` — stream a PNG of the VLESS URI. The
+/// optional `host` query param overrides `PUBLIC_HOST` for one-off renders
+/// (used by the detail page preview when no PUBLIC_HOST is set yet).
+pub async fn qr_png(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    Path(id): Path<i64>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let client = match load_client(&state.pool, id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return not_found_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "client lookup failed for qr");
+            return not_found_response();
+        }
+    };
+    let inbound = match load_active_inbound(&state.pool).await {
+        Ok(Some(i)) => i,
+        _ => return not_found_response(),
+    };
+
+    let host = params
+        .get("host")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let h = state.config.public_host.clone();
+            if h.is_empty() {
+                None
+            } else {
+                Some(h)
+            }
+        })
+        .unwrap_or_else(|| "your-server.example.com".to_string());
+
+    let uri = crate::share::vless::build_uri(&client, &inbound, &host);
+    match crate::share::qr::render_png(&uri) {
+        Ok(bytes) => {
+            let mut response = (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                bytes,
+            )
+                .into_response();
+            for (name, value) in SECURITY_HEADERS {
+                response.headers_mut().insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).expect("static name"),
+                    axum::http::HeaderValue::from_static(value),
+                );
+            }
+            response
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "qr render failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "qr render failed").into_response()
+        }
+    }
+}
+
+async fn render_detail_error(jar: &CookieJar, message: String) -> Response {
+    let html = format!(
+        "<!DOCTYPE html><html lang=\"zh-CN\"><body><p style=\"font-family:sans-serif;padding:24px\">\
+         <a href=\"/admin/clients\">返回用户列表</a></p><p>{message}</p></body></html>"
+    );
+    page(jar.clone(), StatusCode::OK, html)
+}
+
+async fn load_active_inbound(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Option<Inbound>> {
+    sqlx::query_as::<_, Inbound>(
+        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+                status, created_at, updated_at \
+         FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::error::AppError::Database)
+}
+
+fn url_encode(input: &str) -> String {
+    input
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// `POST /admin/clients/:id` — update name / quota / expiry; UUID immutable.

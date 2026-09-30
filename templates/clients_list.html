@@ -126,6 +126,7 @@
             </td>
             <td>
               <div class="row-actions">
+                <a class="btn btn-secondary" href="/admin/clients/{{ c.id }}">详情</a>
                 <a class="btn btn-secondary" href="/admin/clients/{{ c.id }}/edit">编辑</a>
                 <form method="post" action="/admin/clients/{{ c.id }}/delete">
                   <input type="hidden" name="csrf" value="{{ csrf }}">

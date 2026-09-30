@@ -8,6 +8,10 @@ pub struct AppConfig {
     pub data_dir: PathBuf,
     pub stats_interval_secs: u64,
     pub xray_download_base: String,
+    /// Host the panel advertises in VLESS share URIs. When unset, the share
+    /// endpoint refuses with a 4xx rather than silently embedding `127.0.0.1`
+    /// (a localhost URL is useless to a remote client).
+    pub public_host: String,
 }
 
 impl AppConfig {
@@ -22,6 +26,7 @@ impl AppConfig {
             .unwrap_or(30);
         let xray_download_base = std::env::var("XRAY_DOWNLOAD_BASE")
             .unwrap_or_else(|_| "https://github.com".to_string());
+        let public_host = std::env::var("PUBLIC_HOST").unwrap_or_default();
 
         // Per Assumptions: warn (not block) if binding to non-loopback.
         if !is_loopback_host(&bind_addr) {
@@ -36,6 +41,7 @@ impl AppConfig {
             data_dir,
             stats_interval_secs,
             xray_download_base,
+            public_host,
         })
     }
 }

@@ -42,9 +42,11 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/clients", get(clients::list))
         .route("/admin/clients/new", get(clients::new_form))
         .route("/admin/clients", post(clients::create))
+        .route("/admin/clients/:id", get(clients::detail))
         .route("/admin/clients/:id/edit", get(clients::edit_form))
         .route("/admin/clients/:id", post(clients::update))
         .route("/admin/clients/:id/delete", post(clients::delete))
+        .route("/admin/clients/:id/qr.png", get(clients::qr_png))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_session,

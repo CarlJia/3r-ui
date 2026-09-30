@@ -3,6 +3,7 @@ pub mod crypto;
 pub mod db;
 pub mod error;
 pub mod quota;
+pub mod share;
 pub mod web;
 pub mod xray;
 
