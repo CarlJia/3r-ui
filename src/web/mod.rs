@@ -1,6 +1,7 @@
 //! HTTP layer: router, shared state, auth, and the authenticated admin shell.
 
 pub mod auth;
+pub mod inbound;
 pub mod middleware;
 
 use axum::routing::{get, post};
@@ -34,6 +35,9 @@ pub fn router(state: AppState) -> Router {
         .route("/admin", get(auth::dashboard))
         .route("/admin/logout", post(auth::logout))
         .route("/admin/password", post(auth::change_password))
+        .route("/admin/inbound", get(inbound::show))
+        .route("/admin/inbound", post(inbound::save))
+        .route("/admin/inbound/delete", post(inbound::delete))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_session,

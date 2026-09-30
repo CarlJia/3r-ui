@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 入站配置</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card, .pubkey { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+      .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+      .btn-primary { background: #3b82f6 !important; }
+      .btn-danger { background: #4a2226 !important; color: #ff9b9b !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    header a { color: #3b82f6; text-decoration: none; font-size: 13px; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    input {
+      width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px;
+      border: 1px solid #d5d9de; background: #fff; color: inherit; margin-bottom: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .actions { display: flex; gap: 10px; }
+    button {
+      padding: 9px 16px; font-size: 14px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #2f6fd8; }
+    .btn-danger { background: #fdecec; color: #a4262c; }
+    .error {
+      background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
+      border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
+    }
+    .pubkey {
+      background: #f4f5f7; border: 1px solid #e3e6ea; border-radius: 8px;
+      padding: 10px 12px; font-size: 12px; word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 14px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>入站配置</h1>
+    <a href="/admin">返回控制台</a>
+  </header>
+  <main>
+    {% if let Some(err) = error %}
+    <div class="error" role="alert">{{ err }}</div>
+    {% endif %}
+
+    {% if let Some(ib) = inbound %}
+    <section class="card">
+      <h2>REALITY 公钥</h2>
+      <p class="hint">保存时已自动生成新的密钥对；旧客户端需要重新导入分享链接。</p>
+      <div class="pubkey">{{ ib.public_key }}</div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>{% if inbound.is_some() %}编辑入站{% else %}创建入站{% endif %}</h2>
+      <p class="hint">VLESS + REALITY + XHTTP — 面板仅支持单一入站。</p>
+      <form method="post" action="/admin/inbound">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label for="listen_port">监听端口</label>
+        <input id="listen_port" name="listen_port" type="number" min="1" max="65535"
+               value="{% match inbound %}{% when Some with (i) %}{{ i.listen_port }}{% when None %}443{% endmatch %}"
+               required>
+        <label for="dest">REALITY dest（伪装目标域名）</label>
+        <input id="dest" name="dest" placeholder="www.microsoft.com"
+               value="{% match inbound %}{% when Some with (i) %}{{ i.dest }}{% when None %}{% endmatch %}"
+               required>
+        <label for="sni">SNI（serverName）</label>
+        <input id="sni" name="sni" placeholder="www.microsoft.com"
+               value="{% match inbound %}{% when Some with (i) %}{{ i.sni }}{% when None %}{% endmatch %}"
+               required>
+        <label for="short_id">shortId（1-16 位十六进制）</label>
+        <input id="short_id" name="short_id" placeholder="0123456789abcdef"
+               value="{% match inbound %}{% when Some with (i) %}{{ i.short_id }}{% when None %}{% endmatch %}"
+               required>
+        <div class="actions">
+          <button class="btn-primary" type="submit">保存并重载</button>
+        </div>
+      </form>
+    </section>
+
+    {% if inbound.is_some() %}
+    <section class="card">
+      <h2>删除入站</h2>
+      <p class="hint">删除后 xray 会立即停止监听该端口。</p>
+      <form method="post" action="/admin/inbound/delete">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <div class="actions">
+          <button class="btn-danger" type="submit">删除</button>
+        </div>
+      </form>
+    </section>
+    {% endif %}
+  </main>
+</body>
+</html>
