@@ -39,6 +39,8 @@ base64 = "0.22"
 time = { version = "0.3", features = ["formatting", "macros"] }
 subtle = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+tonic = "0.12"
+prost = "0.13"
 
 [dev-dependencies]
 tempfile = "3"
@@ -48,3 +50,7 @@ libc = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[build-dependencies]
+tonic-build = { version = "0.12", features = ["prost"] }
+protoc-bin-vendored = "3"

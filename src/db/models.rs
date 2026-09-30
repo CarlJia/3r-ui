@@ -40,6 +40,8 @@ pub struct TrafficSnapshot {
     pub client_id: i64,
     pub uplink: i64,
     pub downlink: i64,
+    pub xray_uplink: i64,
+    pub xray_downlink: i64,
     pub recorded_at: i64,
 }
 

@@ -2,6 +2,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod quota;
 pub mod web;
 pub mod xray;
 
@@ -20,14 +21,17 @@ pub struct Services {
     pub supervisor_tx: mpsc::Sender<xray::SupervisorCommand>,
     supervisor_handle: tokio::task::JoinHandle<()>,
     http_handle: tokio::task::JoinHandle<()>,
+    stats_handle: tokio::task::JoinHandle<()>,
 }
 
 impl Services {
-    /// Stop the HTTP server and the xray supervisor, then wait for both.
+    /// Stop the HTTP server, the xray supervisor, and the stats poll loop,
+    /// then wait for all three.
     pub async fn shutdown(self) {
         let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;
+        self.stats_handle.abort();
         self.http_handle.abort();
     }
 }
@@ -96,11 +100,21 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         });
     }
 
+    // U7: stats poll loop. Owns its own gRPC client and snapshot state; runs
+    // until the panel shuts down.
+    let stats_handle = tokio::spawn(xray::stats::run_loop(
+        pool.clone(),
+        config.data_dir.clone(),
+        config.stats_interval_secs,
+        supervisor_tx.clone(),
+    ));
+
     Ok(Services {
         pool,
         supervisor_tx,
         supervisor_handle,
         http_handle,
+        stats_handle,
     })
 }
 
