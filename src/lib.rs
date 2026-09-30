@@ -1,6 +1,8 @@
 pub mod config;
+pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod web;
 pub mod xray;
 
 use std::path::Path;
@@ -17,14 +19,16 @@ pub struct Services {
     pub pool: SqlitePool,
     pub supervisor_tx: mpsc::Sender<xray::SupervisorCommand>,
     supervisor_handle: tokio::task::JoinHandle<()>,
+    http_handle: tokio::task::JoinHandle<()>,
 }
 
 impl Services {
-    /// Stop the xray supervisor and wait for it to finish shutting down.
+    /// Stop the HTTP server and the xray supervisor, then wait for both.
     pub async fn shutdown(self) {
         let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;
+        self.http_handle.abort();
     }
 }
 
@@ -48,16 +52,64 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         }
     });
 
+    // U4: HTTP server.
+    let bind_addr: std::net::SocketAddr = config.bind_addr.parse().map_err(|e| {
+        AppError::Config(format!(
+            "BIND_ADDR {:?} is not a valid socket address: {e}",
+            config.bind_addr
+        ))
+    })?;
+    let app_state = web::AppState {
+        config: config.clone(),
+        pool: pool.clone(),
+        supervisor_tx: supervisor_tx.clone(),
+    };
+    let http_handle = tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(error = %e, %bind_addr, "failed to bind HTTP listener");
+                return;
+            }
+        };
+        tracing::info!(addr = %bind_addr, "HTTP server listening");
+        if let Err(e) = axum::serve(listener, web::router(app_state)).await {
+            tracing::error!(error = %e, "HTTP server exited with error");
+        }
+    });
+
+    // Periodically drop expired sessions so the table does not grow without bound.
+    {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                ticker.tick().await;
+                if let Err(e) = sqlx::query("DELETE FROM sessions WHERE expires_at < ?")
+                    .bind(crypto::session::now_unix())
+                    .execute(&pool)
+                    .await
+                {
+                    tracing::warn!(error = %e, "expired session cleanup failed");
+                }
+            }
+        });
+    }
+
     Ok(Services {
         pool,
         supervisor_tx,
         supervisor_handle,
+        http_handle,
     })
 }
 
 /// Acquire the single-instance lock, create the data directory, and open a
 /// migrated SQLite pool.
-async fn init_storage(config: &AppConfig) -> AppResult<SqlitePool> {
+///
+/// Public so integration tests can boot against the same migration and
+/// locking path the binary uses, instead of a parallel setup that could drift.
+pub async fn init_storage(config: &AppConfig) -> AppResult<SqlitePool> {
     use fs2::FileExt;
     use std::fs::OpenOptions;
     use std::os::unix::fs::PermissionsExt;
@@ -157,8 +209,7 @@ async fn ensure_initial_admin(pool: &SqlitePool, data_dir: &Path) -> AppResult<(
             .take(24)
             .map(char::from)
             .collect();
-        // U1 placeholder hash; U4 will swap to bcrypt cost=12 via crypto::password::hash.
-        let hash = format!("placeholder-u4-todo:{password}");
+        let hash = crypto::password::hash(&password)?;
         sqlx::query(
             "INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, unixepoch())",
         )
