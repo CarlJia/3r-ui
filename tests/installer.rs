@@ -80,7 +80,11 @@ fn crc32(buf: &[u8]) -> u32 {
     for &b in buf {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -131,7 +135,11 @@ async fn ensure_xray_downloads_extracts_and_promotes_binary() {
 
     let xray_path = installer.ensure_xray(dir.path()).await.expect("install");
 
-    assert!(xray_path.is_file(), "xray binary not extracted at {}", xray_path.display());
+    assert!(
+        xray_path.is_file(),
+        "xray binary not extracted at {}",
+        xray_path.display()
+    );
     assert_eq!(
         xray_path.file_name().unwrap(),
         if cfg!(windows) { "xray.exe" } else { "xray" }
@@ -145,7 +153,10 @@ async fn ensure_xray_downloads_extracts_and_promotes_binary() {
     );
 
     // Second call should be a no-op (no extra HTTP requests).
-    let path2 = installer.ensure_xray(dir.path()).await.expect("second call");
+    let path2 = installer
+        .ensure_xray(dir.path())
+        .await
+        .expect("second call");
     assert_eq!(path2, xray_path);
 }
 
@@ -165,10 +176,20 @@ async fn ensure_xray_is_idempotent_when_binary_present() {
     // Use a never-reached mock; the call should never hit it.
     let server = MockServer::start().await;
     let installer = Installer::new(server.uri()).unwrap();
-    let path = installer.ensure_xray(dir.path()).await.expect("no-op install");
+    let path = installer
+        .ensure_xray(dir.path())
+        .await
+        .expect("no-op install");
     assert_eq!(path, placeholder);
     // No requests received (no mock set).
-    assert_eq!(server.received_requests().await.map(|r| r.len()).unwrap_or(0), 0);
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .map(|r| r.len())
+            .unwrap_or(0),
+        0
+    );
 }
 
 #[tokio::test]
@@ -182,9 +203,15 @@ async fn ensure_xray_returns_readable_error_on_http_429() {
 
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
-    let err = installer.ensure_xray(dir.path()).await.expect_err("should fail");
+    let err = installer
+        .ensure_xray(dir.path())
+        .await
+        .expect_err("should fail");
     let msg = format!("{err}");
-    assert!(msg.contains("rate-limited") || msg.contains("429"), "msg: {msg}");
+    assert!(
+        msg.contains("rate-limited") || msg.contains("429"),
+        "msg: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -192,7 +219,10 @@ async fn ensure_xray_returns_readable_error_on_connection_failure() {
     let dir = tempdir().unwrap();
     // Point at a port nothing is listening on.
     let installer = Installer::new("http://127.0.0.1:1").unwrap();
-    let err = installer.ensure_xray(dir.path()).await.expect_err("should fail");
+    let err = installer
+        .ensure_xray(dir.path())
+        .await
+        .expect_err("should fail");
     let msg = format!("{err}");
     assert!(!msg.is_empty(), "error message should not be empty");
 }
@@ -215,7 +245,10 @@ async fn ensure_xray_missing_asset_returns_actionable_error() {
 
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
-    let err = installer.ensure_xray(dir.path()).await.expect_err("should fail");
+    let err = installer
+        .ensure_xray(dir.path())
+        .await
+        .expect_err("should fail");
     let msg = format!("{err}");
     assert!(
         msg.contains("no asset") || msg.contains("for this platform"),

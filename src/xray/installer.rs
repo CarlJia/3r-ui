@@ -140,13 +140,17 @@ impl Installer {
     }
 
     async fn fetch_latest_release(&self) -> AppResult<Release> {
-        let url = format!("{}/{}/releases/latest", self.download_base.trim_end_matches('/'), XRAY_REPO);
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::Xray(format!("xray release metadata request failed: {e}; check connectivity to {}", self.download_base)))?;
+        let url = format!(
+            "{}/{}/releases/latest",
+            self.download_base.trim_end_matches('/'),
+            XRAY_REPO
+        );
+        let resp = self.http.get(&url).send().await.map_err(|e| {
+            AppError::Xray(format!(
+                "xray release metadata request failed: {e}; check connectivity to {}",
+                self.download_base
+            ))
+        })?;
         let status = resp.status();
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(AppError::Xray(
@@ -186,9 +190,12 @@ impl Installer {
     fn extract_zip(&self, archive: &Path, dest_dir: &Path) -> AppResult<()> {
         std::fs::create_dir_all(dest_dir).map_err(AppError::Io)?;
         let file = std::fs::File::open(archive).map_err(AppError::Io)?;
-        let mut zip = zip::ZipArchive::new(file).map_err(|e| AppError::Xray(format!("open zip failed: {e}")))?;
+        let mut zip = zip::ZipArchive::new(file)
+            .map_err(|e| AppError::Xray(format!("open zip failed: {e}")))?;
         for i in 0..zip.len() {
-            let mut entry = zip.by_index(i).map_err(|e| AppError::Xray(format!("zip entry {i}: {e}")))?;
+            let mut entry = zip
+                .by_index(i)
+                .map_err(|e| AppError::Xray(format!("zip entry {i}: {e}")))?;
             let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
                 continue;
             };

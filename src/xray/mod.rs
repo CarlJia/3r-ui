@@ -1,3 +1,5 @@
 pub mod installer;
+pub mod process;
 
 pub use installer::Installer;
+pub use process::{SupervisorCommand, XraySupervisor};

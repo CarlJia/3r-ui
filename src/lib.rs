@@ -11,42 +11,60 @@ use tokio::sync::mpsc;
 pub use config::AppConfig;
 pub use error::{AppError, AppResult};
 
-#[derive(Clone)]
-pub struct AppState {
-    pub config: AppConfig,
+/// Handle to everything a running panel owns. Returned by [`start_services`]
+/// so tests can drive the lifecycle without going through signal handling.
+pub struct Services {
     pub pool: SqlitePool,
-    pub supervisor_tx: mpsc::Sender<SupervisorCommand>,
+    pub supervisor_tx: mpsc::Sender<xray::SupervisorCommand>,
+    supervisor_handle: tokio::task::JoinHandle<()>,
 }
 
-#[derive(Debug, Clone)]
-pub enum SupervisorCommand {
-    Reload,
-    Stop,
+impl Services {
+    /// Stop the xray supervisor and wait for it to finish shutting down.
+    pub async fn shutdown(self) {
+        let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;
+    }
 }
 
-/// U1 partial implementation: scaffolding only.
+/// Boot every long-running subsystem the panel owns: SQLite (migrated),
+/// the initial admin account, the xray-core binary, and the xray supervisor.
 ///
-/// Wires up:
-/// - Single-instance `flock` on `${data_dir}/3r-ui.lock`
-/// - Data directory at mode 0700
-/// - SQLite pool + `sqlx::migrate!()` apply
-/// - Initial admin password generation on first start
-/// - Holds the process alive via `ctrl_c`
-///
-/// Subsequent units extend `run` to start the xray supervisor (U3),
-/// the Axum HTTP server (U4), the stats poller (U7), and the e2e
-/// wiring (U10).
-pub async fn run(config: AppConfig) -> AppResult<()> {
+/// Returns once all subsystems are live. The caller decides how long to stay
+/// up (see [`run`], which waits for Ctrl-C).
+pub async fn start_services(config: AppConfig) -> AppResult<Services> {
+    let pool = init_storage(&config).await?;
+    ensure_initial_admin(&pool, &config.data_dir).await?;
+
+    let xray_bin = ensure_xray_binary(&config).await;
+    let config_path = config.data_dir.join("xray").join("config.json");
+
+    let supervisor = xray::XraySupervisor::new(xray_bin, config_path, config.data_dir.clone());
+    let (supervisor_tx, supervisor_rx) = mpsc::channel::<xray::SupervisorCommand>(16);
+    let supervisor_handle = tokio::spawn(async move {
+        if let Err(e) = supervisor.run(supervisor_rx).await {
+            tracing::error!(error = %e, "xray supervisor exited with error");
+        }
+    });
+
+    Ok(Services {
+        pool,
+        supervisor_tx,
+        supervisor_handle,
+    })
+}
+
+/// Acquire the single-instance lock, create the data directory, and open a
+/// migrated SQLite pool.
+async fn init_storage(config: &AppConfig) -> AppResult<SqlitePool> {
     use fs2::FileExt;
     use std::fs::OpenOptions;
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::create_dir_all(&config.data_dir).map_err(AppError::Io)?;
-    std::fs::set_permissions(
-        &config.data_dir,
-        std::fs::Permissions::from_mode(0o700),
-    )
-    .map_err(AppError::Io)?;
+    std::fs::set_permissions(&config.data_dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(AppError::Io)?;
 
     // Single-instance lock: leaked on purpose — released on process exit.
     // Uses try_lock_exclusive so a second invocation fails fast with a clear
@@ -74,32 +92,60 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
         .run(&pool)
         .await
         .map_err(AppError::Migration)?;
+    Ok(pool)
+}
 
-    ensure_initial_admin(&pool, &config.data_dir).await?;
-
-    // U2: download + unpack xray-core on first start (skipped if already present).
-    let installer = crate::xray::Installer::new(config.xray_download_base.clone())?;
+async fn ensure_xray_binary(config: &AppConfig) -> std::path::PathBuf {
+    let installer = match xray::Installer::new(config.xray_download_base.clone()) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, "xray installer init failed");
+            return default_xray_path(config);
+        }
+    };
     match installer.ensure_xray(&config.data_dir).await {
-        Ok(path) => tracing::info!(path = %path.display(), "xray-core ready"),
-        Err(e) => tracing::warn!(error = %e, "xray-core not installed; UI will work but xray will not run until binary is placed at $DATA_DIR/xray/"),
+        Ok(path) => {
+            tracing::info!(path = %path.display(), "xray-core ready");
+            path
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "xray-core not installed; xray will not start until a binary is placed at $DATA_DIR/xray/"
+            );
+            default_xray_path(config)
+        }
     }
+}
+
+fn default_xray_path(config: &AppConfig) -> std::path::PathBuf {
+    config
+        .data_dir
+        .join("xray")
+        .join(if cfg!(windows) { "xray.exe" } else { "xray" })
+}
+
+/// Start the panel and block until Ctrl-C, then shut the supervisor down.
+pub async fn run(config: AppConfig) -> AppResult<()> {
+    let services = start_services(config.clone()).await?;
 
     tracing::info!(
         addr = %config.bind_addr,
         data_dir = %config.data_dir.display(),
-        "U2 ready (xray installer wired; supervisor + axum server in U3/U4)"
+        "3r-ui ready (HTTP server + UI wire in U4)"
     );
 
-    // U1 placeholder: hold the pool until the future is dropped, so the
-    // connection remains valid for the lifetime of `run`. U4 will replace
-    // this with the axum serve loop and pass the pool to AppState.
-    let _pool = pool;
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => tracing::info!("shutdown signal received; stopping xray"),
+        Err(e) => tracing::warn!(error = %e, "signal handler failed; stopping on channel close"),
+    }
+    services.shutdown().await;
     Ok(())
 }
 
 async fn ensure_initial_admin(pool: &SqlitePool, data_dir: &Path) -> AppResult<()> {
-    use std::os::unix::fs::PermissionsExt;
     use rand::{distributions::Alphanumeric, Rng};
+    use std::os::unix::fs::PermissionsExt;
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admins")
         .fetch_one(pool)
@@ -128,7 +174,10 @@ async fn ensure_initial_admin(pool: &SqlitePool, data_dir: &Path) -> AppResult<(
             .map_err(AppError::Io)?;
 
         eprintln!("======================================================================");
-        eprintln!("3r-ui initial admin password written to: {}", pw_path.display());
+        eprintln!(
+            "3r-ui initial admin password written to: {}",
+            pw_path.display()
+        );
         eprintln!("Username: admin");
         eprintln!("Password: {password}");
         eprintln!("(U1 placeholder hash; bcrypt to be wired in U4)");
