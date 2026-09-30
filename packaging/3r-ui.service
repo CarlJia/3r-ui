@@ -1,0 +1,35 @@
+[Unit]
+Description=3R-UI xray-core management panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/3r-ui/3r-ui.env
+ExecStart=/usr/local/bin/3r-ui
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Hardening — the panel itself listens only on loopback by default, so it
+# does not need the network namespace, capabilities, or /proc visibility.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/3r-ui /var/log/3r-ui
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=3r-ui
+
+[Install]
+WantedBy=multi-user.target
