@@ -1,6 +1,7 @@
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod xray;
 
 use std::path::Path;
 
@@ -76,10 +77,17 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
 
     ensure_initial_admin(&pool, &config.data_dir).await?;
 
+    // U2: download + unpack xray-core on first start (skipped if already present).
+    let installer = crate::xray::Installer::new(config.xray_download_base.clone())?;
+    match installer.ensure_xray(&config.data_dir).await {
+        Ok(path) => tracing::info!(path = %path.display(), "xray-core ready"),
+        Err(e) => tracing::warn!(error = %e, "xray-core not installed; UI will work but xray will not run until binary is placed at $DATA_DIR/xray/"),
+    }
+
     tracing::info!(
         addr = %config.bind_addr,
         data_dir = %config.data_dir.display(),
-        "U1 scaffold ready (xray installer + axum server wire in U2/U4)"
+        "U2 ready (xray installer wired; supervisor + axum server in U3/U4)"
     );
 
     // U1 placeholder: hold the pool until the future is dropped, so the
