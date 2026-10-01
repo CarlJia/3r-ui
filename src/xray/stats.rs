@@ -258,6 +258,14 @@ pub async fn run_loop(
     loop {
         ticker.tick().await;
 
+        // Quota is enforced against the cumulative total in SQLite, which
+        // survives an xray outage. So the check runs even when the poll
+        // itself failed — otherwise a client that already crossed its cap
+        // would stay active indefinitely while the stats API is down.
+        if let Err(e) = quota::on_quota_or_disable(&pool, &config_path, &supervisor_tx).await {
+            tracing::warn!(error = %e, "quota enforcement failed");
+        }
+
         let mut client = match connect().await {
             Ok(c) => c,
             Err(e) => {
@@ -266,20 +274,8 @@ pub async fn run_loop(
             }
         };
 
-        match poll_once(pool.clone(), &mut snapshot, &mut client).await {
-            Ok(n) => {
-                if n > 0 {
-                    tracing::debug!(rows = n, "stats poll wrote snapshot rows");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "stats poll failed; will retry next tick");
-                continue;
-            }
-        }
-
-        if let Err(e) = quota::on_quota_or_disable(&pool, &config_path, &supervisor_tx).await {
-            tracing::warn!(error = %e, "quota enforcement failed after poll");
+        if let Err(e) = poll_once(pool.clone(), &mut snapshot, &mut client).await {
+            tracing::warn!(error = %e, "stats poll failed; will retry next tick");
         }
     }
 }

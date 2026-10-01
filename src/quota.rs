@@ -172,4 +172,19 @@ mod tests {
         insert_client(&pool, 1, 100).await;
         assert_eq!(latest_total(&pool, 1).await.unwrap(), 0);
     }
+
+    /// Regression: the stats loop used to `continue` past the quota check when
+    /// `poll_once` failed (xray unreachable). Since the cumulative total
+    /// lives in SQLite and survives the outage, an already-over-quota client
+    /// would stay active for as long as the stats API was down. The check is
+    /// now unconditional; this test pins the property that makes that safe —
+    /// `check` reads only SQLite and needs no stats round-trip.
+    #[tokio::test]
+    async fn quota_check_works_without_any_stats_round_trip() {
+        let (_dir, pool) = pool().await;
+        insert_client(&pool, 1, 10 * 1024).await;
+        seed_traffic(&pool, 1, 8 * 1024, 8 * 1024).await;
+        // No gRPC, no snapshot state — just the DB rows a previous poll wrote.
+        assert_eq!(check(&pool).await.unwrap(), vec![1]);
+    }
 }

@@ -51,6 +51,9 @@ fn wait_for_port(port: u16, deadline: Duration) -> std::io::Result<()> {
 /// Tiny synchronous HTTP/1.1 client good enough for the smoke flow. We
 /// could pull in reqwest, but keeping this self-contained means the smoke
 /// does not need a separate dev-dependency or any TLS stack.
+///
+/// The body comes back as bytes because `/qr.png` returns binary — a String
+/// return would fail UTF-8 validation on the PNG.
 fn http(
     host: &str,
     port: u16,
@@ -58,7 +61,7 @@ fn http(
     path: &str,
     body: Option<&str>,
     cookies: &str,
-) -> std::io::Result<(u16, String, String)> {
+) -> std::io::Result<(u16, String, Vec<u8>)> {
     let mut stream = TcpStream::connect((host, port))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut req =
@@ -76,18 +79,24 @@ fn http(
     }
     stream.write_all(req.as_bytes())?;
 
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw)?;
-    let mut parts = raw.splitn(2, "\r\n\r\n");
-    let head = parts.next().unwrap_or("");
-    let body = parts.next().unwrap_or("").to_string();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw)?;
+    // Split at the first CRLFCRLF; everything after is the body, bytes intact.
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "no header terminator")
+        })?;
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let body = raw[split + 4..].to_vec();
     let status_line = head.lines().next().unwrap_or("");
     let status: u16 = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|n| n.parse().ok())
         .unwrap_or(0);
-    Ok((status, head.to_string(), body))
+    Ok((status, head, body))
 }
 
 /// Set `Set-Cookie: csrf=...; session=...` headers from the previous
@@ -228,6 +237,7 @@ fn panel_starts_and_serves_the_login_page() {
 
     let (status, _head, body) = http("127.0.0.1", h.base_port, "GET", "/", None, "").unwrap();
     assert_eq!(status, 200, "GET / should be 200");
+    let body = String::from_utf8_lossy(&body);
     assert!(body.contains("登录"));
     // Security headers from the middleware must be on every response.
     let (_s, head, _) = http("127.0.0.1", h.base_port, "GET", "/", None, "").unwrap();
@@ -263,6 +273,7 @@ fn login_rejects_unknown_user() {
     )
     .unwrap();
     assert_eq!(status, 401, "wrong password should be 401");
+    let body = String::from_utf8_lossy(&body);
     assert!(body.contains("用户名或密码错误"));
 }
 
@@ -300,6 +311,7 @@ fn full_admin_flow_completes() {
         &cookies,
     )
     .unwrap();
+    let body = String::from_utf8_lossy(&body);
     assert_eq!(status, 303, "login should redirect; body: {body}");
     let set_cookies: Vec<String> = head
         .lines()
@@ -331,6 +343,7 @@ fn full_admin_flow_completes() {
         &cookies,
     )
     .unwrap();
+    let body = String::from_utf8_lossy(&body);
     assert_eq!(status, 303, "inbound save should redirect; body: {body}");
 
     // 5. Create a user.
@@ -343,6 +356,7 @@ fn full_admin_flow_completes() {
         &cookies,
     )
     .unwrap();
+    let body = String::from_utf8_lossy(&body);
     assert_eq!(status, 303, "client save should redirect; body: {body}");
 
     // 6. Verify xray config.json reflects both.
@@ -371,7 +385,7 @@ fn full_admin_flow_completes() {
         .contains("content-type: image/png"));
     assert!(body.len() > 100, "png should not be tiny");
     assert_eq!(
-        &body.as_bytes()[..8],
+        &body[..8],
         &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
     );
 }

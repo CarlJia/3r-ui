@@ -199,7 +199,7 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
     tracing::info!(
         addr = %config.bind_addr,
         data_dir = %config.data_dir.display(),
-        "3r-ui ready (HTTP server + UI wire in U4)"
+        "3r-ui ready (HTTP server + xray supervisor + stats poll)"
     );
 
     match tokio::signal::ctrl_c().await {
@@ -246,7 +246,7 @@ async fn ensure_initial_admin(pool: &SqlitePool, data_dir: &Path) -> AppResult<(
         );
         eprintln!("Username: admin");
         eprintln!("Password: {password}");
-        eprintln!("(U1 placeholder hash; bcrypt to be wired in U4)");
+        eprintln!("Change it after your first login at /admin.");
         eprintln!("======================================================================");
     }
     Ok(())
