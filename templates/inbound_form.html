@@ -47,6 +47,11 @@
     .btn-primary { background: #3b82f6; color: #fff; }
     .btn-primary:hover { background: #2f6fd8; }
     .btn-danger { background: #fdecec; color: #a4262c; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    .btn-secondary:hover { background: #d8dadf; }
+    .shortid-row { display: flex; gap: 8px; align-items: stretch; }
+    .shortid-row input { flex: 1; margin-bottom: 14px; }
+    .shortid-row button { flex: 0 0 auto; padding: 8px 14px; font-size: 13px; }
     .error {
       background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
       border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
@@ -94,9 +99,12 @@
                value="{% match inbound %}{% when Some with (i) %}{{ i.sni }}{% when None %}{% endmatch %}"
                required>
         <label for="short_id">shortId（1-16 位十六进制）</label>
-        <input id="short_id" name="short_id" placeholder="0123456789abcdef"
-               value="{% match inbound %}{% when Some with (i) %}{{ i.short_id }}{% when None %}{% endmatch %}"
-               required>
+        <div class="shortid-row">
+          <input id="short_id" name="short_id" placeholder="0123456789abcdef"
+                 value="{% match inbound %}{% when Some with (i) %}{{ i.short_id }}{% when None %}{{ default_short_id }}{% endmatch %}"
+                 required>
+          <button class="btn-secondary" type="button" id="shortid-random">随机</button>
+        </div>
         <div class="actions">
           <button class="btn-primary" type="submit">保存并重载</button>
         </div>
@@ -116,5 +124,30 @@
     </section>
     {% endif %}
   </main>
+
+  <script>
+    (function () {
+      const btn = document.getElementById('shortid-random');
+      const input = document.getElementById('short_id');
+      if (!btn || !input) return;
+      // 8 random bytes -> 16 lowercase hex chars. crypto.getRandomValues is
+      // available in every browser the panel targets and keeps the value
+      // unpredictable without a server round-trip.
+      function rollShortId() {
+        const buf = new Uint8Array(8);
+        crypto.getRandomValues(buf);
+        let s = '';
+        for (let i = 0; i < buf.length; i++) {
+          s += buf[i].toString(16).padStart(2, '0');
+        }
+        return s;
+      }
+      btn.addEventListener('click', () => {
+        input.value = rollShortId();
+        input.focus();
+        input.select();
+      });
+    })();
+  </script>
 </body>
 </html>

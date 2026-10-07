@@ -10,6 +10,7 @@ use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
+use rand::RngCore;
 
 use crate::crypto::reality::generate_keypair;
 use crate::db::models::Inbound;
@@ -23,6 +24,10 @@ use crate::xray::SupervisorCommand;
 struct InboundFormTemplate {
     csrf: String,
     inbound: Option<InboundView>,
+    /// Pre-generated 16-hex-char default used when there is no inbound to edit
+    /// yet — the form is never shown with an empty shortId, and the random
+    /// button next to the input lets the operator re-roll on demand.
+    default_short_id: String,
     error: Option<String>,
 }
 
@@ -64,9 +69,11 @@ pub async fn show(
     jar: CookieJar,
 ) -> Response {
     let existing = current_inbound(&state).await.ok().flatten();
+    let default_short_id = random_short_id();
     let html = InboundFormTemplate {
         csrf: csrf_from_cookies(&jar),
         inbound: existing.as_ref().map(InboundView::from),
+        default_short_id,
         error: None,
     }
     .render()
@@ -221,14 +228,33 @@ async fn reload(state: &AppState) {
 }
 
 async fn render_error(jar: &CookieJar, inbound: Option<&Inbound>, error: String) -> Response {
+    // On a validation re-render we keep whatever the operator typed: if they
+    // already have an inbound, that shortId; otherwise a new random one so
+    // the form is never shown empty after an error.
+    let default_short_id = inbound.map(|i| i.short_id.clone()).unwrap_or_else(random_short_id);
     let html = InboundFormTemplate {
         csrf: csrf_from_cookies(jar),
         inbound: inbound.map(InboundView::from),
+        default_short_id,
         error: Some(error),
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
     page(jar.clone(), StatusCode::BAD_REQUEST, html)
+}
+
+/// Generate a 16-hex-char (8-byte) random shortId. xray REALITY accepts any
+/// ASCII-hex shortId from 1 to 16 chars; 16 hex chars is what 3x-ui's
+/// installer ships as its default, so it matches user expectation.
+fn random_short_id() -> String {
+    let mut bytes = [0u8; 8];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let mut s = String::with_capacity(16);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// 303 back to the inbound page, carrying `jar`'s Set-Cookie values.

@@ -146,6 +146,60 @@ async fn inbound_page_renders_an_empty_form() {
 }
 
 #[tokio::test]
+async fn empty_inbound_form_seeds_a_default_short_id() {
+    // The form must never be served with an empty value for shortId: it
+    // gates on `required` and the server validates 1-16 hex chars. A
+    // pre-generated default is the safety net.
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/inbound", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let html = body_text(resp).await;
+    let id_pos = html.find("id=\"short_id\"").expect("short_id input is rendered");
+    // The `value="..."` attribute sits before the closing `>` of the input
+    // tag. Walk forward, ignoring anything inside a single-line input
+    // (no nested tags), and grab the value.
+    let after_id = &html[id_pos..];
+    let value_start = after_id
+        .find("value=\"")
+        .expect("value attribute on short_id input");
+    let value_bytes = &after_id[value_start + "value=\"".len()..];
+    let value_end = value_bytes.find('"').expect("value attribute close quote");
+    let value = &value_bytes[..value_end];
+    assert!(
+        (1..=16).contains(&value.len()) && value.chars().all(|c| c.is_ascii_hexdigit()),
+        "default shortId must be 1-16 hex chars, got {value:?}"
+    );
+}
+
+// Helper retained for symmetry with potential future tests; not used above
+// now that we walk the string manually.
+#[allow(dead_code)]
+mod regex_lite {
+    pub struct Captures<'a> {
+        groups: Vec<Option<&'a str>>,
+    }
+    impl<'a> Captures<'a> {
+        pub fn get(&self, i: usize) -> Option<&'a str> {
+            self.groups.get(i).and_then(|o| *o)
+        }
+    }
+    pub struct RegexLite {
+        needle: &'static str,
+    }
+    impl RegexLite {
+        pub fn captures<'a>(&self, text: &'a str) -> Option<Captures<'a>> {
+            let start = text.find(self.needle)?;
+            let after = &text[start + self.needle.len()..];
+            let end = after.find('"').unwrap_or(after.len());
+            Some(Captures { groups: vec![Some(&after[..end])] })
+        }
+    }
+    pub fn regex_lite(needle: &'static str) -> RegexLite { RegexLite { needle } }
+}
+
+#[tokio::test]
 async fn create_inbound_persists_and_renders_config() {
     let h = boot().await;
     let (session, csrf) = login(&h).await;
