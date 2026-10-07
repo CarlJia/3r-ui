@@ -112,6 +112,7 @@
         <input id="sni" name="sni" placeholder="www.microsoft.com"
                value="{% match inbound %}{% when Some with (i) %}{{ i.sni }}{% when None %}{% endmatch %}"
                required>
+        <p class="hint">填其中一个会自动同步另一个；要分别配置时直接编辑其中一项即可。</p>
         <label for="short_id">shortId（1-16 位十六进制）</label>
         <div class="shortid-row">
           <input id="short_id" name="short_id" placeholder="0123456789abcdef"
@@ -160,6 +161,26 @@
         input.value = rollShortId();
         input.focus();
         input.select();
+      });
+    })();
+
+    (function () {
+      // dest and sni are usually the same domain (REALITY proxies to a
+      // TLS endpoint that matches its SNI). When the operator types one
+      // and the other is empty, mirror it across — but only one-way, so
+      // editing one of them after both are filled never clobbers the
+      // other. Initial server-rendered values are preserved.
+      const dest = document.getElementById('dest');
+      const sni = document.getElementById('sni');
+      if (!dest || !sni) return;
+      function isEmpty(el) {
+        return el.value.trim().length === 0;
+      }
+      dest.addEventListener('input', () => {
+        if (isEmpty(sni)) sni.value = dest.value;
+      });
+      sni.addEventListener('input', () => {
+        if (isEmpty(dest)) dest.value = sni.value;
       });
     })();
   </script>
