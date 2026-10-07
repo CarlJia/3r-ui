@@ -55,6 +55,23 @@ async fn boot() -> Harness {
     }
 }
 
+/// Boot with a single active inbound already saved. The keypair here is a
+/// placeholder; the echo test only checks the field values the page reads
+/// back from the DB, not xray semantics.
+async fn boot_with_inbound() -> Harness {
+    let h = boot().await;
+    sqlx::query(
+        "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
+                public_key, short_id, status, created_at, updated_at) \
+         VALUES (8443, 'a.example', 'a.example', NULL, 'priv', 'PUBKEY', 'ab', \
+                'active', unixepoch(), unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    h
+}
+
 fn set_cookie(resp: &axum::response::Response, name: &str) -> Option<String> {
     let prefix = format!("{name}=");
     resp.headers()
@@ -142,7 +159,8 @@ async fn inbound_page_renders_an_empty_form() {
     let html = body_text(resp).await;
     assert!(html.contains(r#"action="/admin/inbound""#));
     assert!(html.contains(r#"name="listen_port""#));
-    assert!(!html.contains("REALITY 公钥"), "no key yet");
+    // No inbound exists yet, so the config-echo panel must NOT appear.
+    assert!(!html.contains(r#"class="config-echo""#));
 }
 
 #[tokio::test]
@@ -156,7 +174,9 @@ async fn empty_inbound_form_seeds_a_default_short_id() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let html = body_text(resp).await;
-    let id_pos = html.find("id=\"short_id\"").expect("short_id input is rendered");
+    let id_pos = html
+        .find("id=\"short_id\"")
+        .expect("short_id input is rendered");
     // The `value="..."` attribute sits before the closing `>` of the input
     // tag. Walk forward, ignoring anything inside a single-line input
     // (no nested tags), and grab the value.
@@ -171,6 +191,43 @@ async fn empty_inbound_form_seeds_a_default_short_id() {
         (1..=16).contains(&value.len()) && value.chars().all(|c| c.is_ascii_hexdigit()),
         "default shortId must be 1-16 hex chars, got {value:?}"
     );
+}
+
+#[tokio::test]
+async fn inbound_page_echoes_current_config_after_save() {
+    // After a successful save the page must echo back every value the
+    // operator just committed: port, dest, SNI, shortId, and the
+    // server-generated public_key. Without the echo the operator cannot
+    // verify what was saved without diffing against their input.
+    let h = boot_with_inbound().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/inbound", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let html = body_text(resp).await;
+    assert!(
+        html.contains(r#"class="config-echo""#),
+        "config-echo panel is rendered"
+    );
+    // The dl's labels appear as dt text, the values appear as dd text or
+    // <code>. Match by substring around each label so the test does not
+    // depend on the exact ordering of siblings.
+    for needle in [
+        "监听端口",
+        "REALITY dest",
+        "SNI",
+        "shortId",
+        "REALITY 公钥",
+        "8443",      // listen_port from boot_with_inbound
+        "a.example", // dest
+        "ab",        // short_id
+    ] {
+        assert!(
+            html.contains(needle),
+            "echo panel missing {needle:?}\n--- excerpt ---\n{}",
+            &html[..html.len().min(2000)]
+        );
+    }
 }
 
 // Helper retained for symmetry with potential future tests; not used above
@@ -193,10 +250,14 @@ mod regex_lite {
             let start = text.find(self.needle)?;
             let after = &text[start + self.needle.len()..];
             let end = after.find('"').unwrap_or(after.len());
-            Some(Captures { groups: vec![Some(&after[..end])] })
+            Some(Captures {
+                groups: vec![Some(&after[..end])],
+            })
         }
     }
-    pub fn regex_lite(needle: &'static str) -> RegexLite { RegexLite { needle } }
+    pub fn regex_lite(needle: &'static str) -> RegexLite {
+        RegexLite { needle }
+    }
 }
 
 #[tokio::test]

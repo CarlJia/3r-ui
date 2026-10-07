@@ -231,7 +231,9 @@ async fn render_error(jar: &CookieJar, inbound: Option<&Inbound>, error: String)
     // On a validation re-render we keep whatever the operator typed: if they
     // already have an inbound, that shortId; otherwise a new random one so
     // the form is never shown empty after an error.
-    let default_short_id = inbound.map(|i| i.short_id.clone()).unwrap_or_else(random_short_id);
+    let default_short_id = inbound
+        .map(|i| i.short_id.clone())
+        .unwrap_or_else(random_short_id);
     let html = InboundFormTemplate {
         csrf: csrf_from_cookies(jar),
         inbound: inbound.map(InboundView::from),
