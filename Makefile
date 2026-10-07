@@ -91,6 +91,18 @@ fmt-check:
 clean:
 	$(CARGO) clean
 
+# Local one-shot launcher (scripts/dev.sh). Keeps state under .run/dev so
+# admin password + inbound + users survive across rebuilds. Override with
+# DATA_DIR=/tmp/foo or pass FRESH=1 to wipe and start over.
+.PHONY: dev dev-rebuild
+dev:
+	$(MAKE) build
+	scripts/dev.sh --data-dir .run/dev
+
+dev-rebuild:
+	$(MAKE) build
+	scripts/dev.sh --rebuild --data-dir .run/dev
+
 # Print where the linux binaries landed after a cross build.
 .PHONY: linux-output
 linux-output:
