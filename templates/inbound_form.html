@@ -166,22 +166,38 @@
 
     (function () {
       // dest and sni are usually the same domain (REALITY proxies to a
-      // TLS endpoint that matches its SNI). When the operator types one
-      // and the other is empty, mirror it across — but only one-way, so
-      // editing one of them after both are filled never clobbers the
-      // other. Initial server-rendered values are preserved.
+      // TLS endpoint that matches its SNI). The handler keeps the link
+      // alive while the operator is typing into one field — but only as
+      // long as the other field has not been independently edited.
+      //
+      // Implementation: track the last value this side pushed; mirror only
+      // follows while its current value still equals what we last pushed.
+      // Once the operator edits the mirror, the equality fails and the
+      // link breaks for that direction (the operator's edit is preserved).
+      // Both directions track their own state, so editing sni does not
+      // silently re-enable the dest->sni link.
+      //
+      // Initial values matter: when the server renders dest="a.com",
+      // sni="b.com" (intentional divergence), both wires' lastEmitted equal
+      // their respective own values. Any input event finds the mirror
+      // unequal and skips — the divergence is preserved.
       const dest = document.getElementById('dest');
       const sni = document.getElementById('sni');
       if (!dest || !sni) return;
-      function isEmpty(el) {
-        return el.value.trim().length === 0;
+      function linkPair(src, mirror) {
+        let lastEmitted = src.value;
+        src.addEventListener('input', () => {
+          if (mirror.value === lastEmitted) {
+            mirror.value = src.value;
+            lastEmitted = src.value;
+          } else {
+            // Operator edited mirror independently; break this direction.
+            lastEmitted = null;
+          }
+        });
       }
-      dest.addEventListener('input', () => {
-        if (isEmpty(sni)) sni.value = dest.value;
-      });
-      sni.addEventListener('input', () => {
-        if (isEmpty(dest)) dest.value = sni.value;
-      });
+      linkPair(dest, sni);
+      linkPair(sni, dest);
     })();
   </script>
 </body>
