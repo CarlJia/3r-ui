@@ -91,30 +91,53 @@ async fn body_text(resp: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
+/// 插入一条 connection_logs 行。`src_addr` / `dest` / `reason` / `raw_message`
+/// 缺省时给 None/"seed line"，调用方只覆盖自己关心的字段。
+#[allow(clippy::too_many_arguments)]
+async fn insert_log(
+    h: &Harness,
+    logged_at: i64,
+    uuid: &str,
+    src_addr: Option<&str>,
+    dest: Option<&str>,
+    status: &str,
+    reason: Option<&str>,
+    raw_message: Option<&str>,
+) {
+    sqlx::query(
+        "INSERT INTO connection_logs \
+            (logged_at, uuid, src_addr, dest, status, reason, raw_message, received_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(logged_at)
+    .bind(uuid)
+    .bind(src_addr.map(str::to_string))
+    .bind(dest.map(str::to_string))
+    .bind(status)
+    .bind(reason.map(str::to_string))
+    .bind(raw_message.unwrap_or("seed line"))
+    .bind(logged_at)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+}
+
 /// 写入 N 条样例 connection_logs，`logged_at` 从 `base_ts` 起每条递增 1 秒，
 /// uuid 在 `uuids` 中循环取用，status 在 `statuses` 中循环取用。
 async fn seed_logs(h: &Harness, n: usize, base_ts: i64, uuids: &[&str], statuses: &[&str]) {
     for i in 0..n {
-        sqlx::query(
-            "INSERT INTO connection_logs \
-                (logged_at, uuid, src_addr, dest, status, reason, raw_message, received_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        let status = statuses[i % statuses.len()];
+        insert_log(
+            h,
+            base_ts + i as i64,
+            uuids[i % uuids.len()],
+            Some(&format!("10.0.0.{}:{}", 100 + i, 40000 + i)),
+            Some("example.com:443"),
+            status,
+            (status == "rejected").then_some("user not found"),
+            Some(&format!("seed line {i}")),
         )
-        .bind(base_ts + i as i64)
-        .bind(uuids[i % uuids.len()])
-        .bind(format!("10.0.0.{}:{}", 100 + i, 40000 + i))
-        .bind("example.com:443")
-        .bind(statuses[i % statuses.len()])
-        .bind(if statuses[i % statuses.len()] == "rejected" {
-            Some("user not found".to_string())
-        } else {
-            None
-        })
-        .bind(format!("seed line {i}"))
-        .bind(base_ts)
-        .execute(&h.pool)
-        .await
-        .unwrap();
+        .await;
     }
 }
 
@@ -376,10 +399,11 @@ async fn logs_page_includes_sidebar_style_for_layout() {
     let (session, _csrf) = login(&h).await;
     let resp = get(&h, "/admin/logs", &session).await;
     let html = body_text(resp).await;
-    // sidebar_style.html 提供了 .content 的 grid 布局；缺它侧边栏塌成单列。
+    // sidebar_style.html 独有 `body { display: grid; grid-template-columns: 220px ... }`
+    // 规则；缺它 logs 页面会塌成单列，sidebar_nav.html 不会带来这段样式。
     assert!(
-        html.contains(".content") || html.contains("sidebar"),
-        "logs page should include sidebar_style.html content"
+        html.contains("grid-template-columns: 220px"),
+        "sidebar_style.html grid layout must be present"
     );
 }
 
@@ -418,22 +442,17 @@ async fn status_badges_use_accepted_and_rejected_classes() {
 async fn detail_column_escapes_html_in_raw_message() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    sqlx::query(
-        "INSERT INTO connection_logs \
-            (logged_at, uuid, src_addr, dest, status, reason, raw_message, received_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    insert_log(
+        &h,
+        1_700_000_000,
+        "uuid-aaa",
+        Some("10.0.0.1:1"),
+        Some("a.com:443"),
+        "accepted",
+        None,
+        Some("<script>alert(1)</script>"),
     )
-    .bind(1_700_000_000)
-    .bind("uuid-aaa")
-    .bind(Some("10.0.0.1:1".to_string()))
-    .bind(Some("a.com:443".to_string()))
-    .bind("accepted")
-    .bind::<Option<String>>(None)
-    .bind("<script>alert(1)</script>")
-    .bind(1_700_000_000)
-    .execute(&h.pool)
-    .await
-    .unwrap();
+    .await;
 
     let html = body_text(get(&h, "/admin/logs", &session).await).await;
     assert!(
@@ -448,22 +467,17 @@ async fn detail_column_truncates_long_raw_message() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
     let long = "x".repeat(200);
-    sqlx::query(
-        "INSERT INTO connection_logs \
-            (logged_at, uuid, src_addr, dest, status, reason, raw_message, received_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    insert_log(
+        &h,
+        1_700_000_000,
+        "uuid-aaa",
+        Some("10.0.0.1:1"),
+        Some("a.com:443"),
+        "accepted",
+        None,
+        Some(&long),
     )
-    .bind(1_700_000_000)
-    .bind("uuid-aaa")
-    .bind(Some("10.0.0.1:1".to_string()))
-    .bind(Some("a.com:443".to_string()))
-    .bind("accepted")
-    .bind::<Option<String>>(None)
-    .bind(&long)
-    .bind(1_700_000_000)
-    .execute(&h.pool)
-    .await
-    .unwrap();
+    .await;
 
     let html = body_text(get(&h, "/admin/logs", &session).await).await;
     // 预览截断到 60 字 + `…`；完整 200 字只在 title 属性里。
@@ -487,22 +501,7 @@ async fn prune_older_than_deletes_only_rows_before_threshold() {
         (now - 31 * day, "31d"),
         (now - 60 * day, "60d"),
     ] {
-        sqlx::query(
-            "INSERT INTO connection_logs \
-                (logged_at, uuid, src_addr, dest, status, reason, raw_message, received_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(offset)
-        .bind(label)
-        .bind::<Option<String>>(None)
-        .bind::<Option<String>>(None)
-        .bind("accepted")
-        .bind::<Option<String>>(None)
-        .bind("prune seed")
-        .bind(now)
-        .execute(&h.pool)
-        .await
-        .unwrap();
+        insert_log(&h, offset, label, None, None, "accepted", None, None).await;
     }
 
     let deleted = three_r_ui::xray::logs::prune_older_than(&h.pool, now - 30 * day)

@@ -73,7 +73,8 @@ pub fn parse_expiry(raw: Option<&str>) -> Option<i64> {
 
 /// Parse `YYYY-MM-DD` by hand. `time`'s own parsing helpers sit behind a
 /// sealed trait, and this is the only date shape the panel accepts.
-fn parse_iso_date(raw: &str) -> Option<time::Date> {
+/// Shared with the connection-log page's date-range filter.
+pub(crate) fn parse_iso_date(raw: &str) -> Option<time::Date> {
     let (y, rest) = raw.split_once('-')?;
     let (m, d) = rest.split_once('-')?;
     // Reject anything with more than two separators (e.g. a stray timestamp).

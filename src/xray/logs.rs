@@ -35,39 +35,32 @@ pub struct ParsedAccess {
 }
 
 /// 解析 `YYYY/MM/DD HH:MM:SS` 格式的 xray 时间戳前缀为 Unix 秒。
-/// 失败返回 `None`（调用方回退到 `received_at`）。
+/// 失败返回 `None`（调用方回退到 `received_at`）。字段走 `time` crate
+/// 的日历校验，越界值（month 13、hour 25 等）返回 `None` 而非算出垃圾。
 fn parse_xray_timestamp(line: &str) -> Option<i64> {
     // xray 默认 `2006/01/02 15:04:05`；日期与时间之间一个空格。
     let rest = line.trim_start();
     let (date, after_date) = rest.split_once(' ')?;
-    let (time, _) = after_date.trim_start().split_once(' ')?;
+    let (time_str, _) = after_date.trim_start().split_once(' ')?;
     let (y, rest) = date.split_once('/')?;
-    let (mo, rest) = rest.split_once('/')?;
-    let (d, _) = rest.split_once(' ').unwrap_or((rest, ""));
-    let (h, rest) = time.split_once(':')?;
-    let (mi, s) = rest.split_once(':')?;
-
+    let (mo, d) = rest.split_once('/')?;
     let year: i32 = y.parse().ok()?;
     let month: u8 = mo.parse().ok()?;
     let day: u8 = d.parse().ok()?;
+    let (h, rest) = time_str.split_once(':')?;
+    let (mi, s) = rest.split_once(':')?;
     let hour: u8 = h.parse().ok()?;
     let minute: u8 = mi.parse().ok()?;
     let second: u8 = s.parse().ok()?;
 
-    // 用 civil date → unix seconds 的算术，不引入新依赖。
-    let days = days_from_civil(year, month, day);
-    Some(days * 86400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64))
-}
-
-/// Howard Hinnant 的 civil-from-days 算法（公历 → Unix 天数）。
-fn days_from_civil(y: i32, m: u8, d: u8) -> i64 {
-    let y = y as i64 - if m <= 2 { 1 } else { 0 };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m as i64 + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
+    let date =
+        time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()?;
+    let t = time::Time::from_hms(hour, minute, second).ok()?;
+    Some(
+        time::PrimitiveDateTime::new(date, t)
+            .assume_utc()
+            .unix_timestamp(),
+    )
 }
 
 /// 解析一条 xray access log 行。返回 `None` 表示不是访问日志行（如
@@ -147,6 +140,13 @@ pub fn parse_access_line(line: &str) -> Option<ParsedAccess> {
     })
 }
 
+/// 轻量判断：一行 stderr 是否是 access log 行（含 `accepted` / `rejected`
+/// 关键字）。`XraySupervisor` 用它把 access 行的面板日志降级到 debug，
+/// error/warning 行保持 warn 可见性。
+pub fn is_access_log_line(line: &str) -> bool {
+    find_status_keyword(line).is_some()
+}
+
 /// 在行内定位 `accepted` / `rejected` 关键字（以空格或行首尾为界）。
 /// 返回 `(status, status 之后剩余的行文本)`。
 fn find_status_keyword(line: &str) -> Option<(&str, &str)> {
@@ -178,37 +178,68 @@ fn looks_like_uuid(token: &str) -> bool {
         .all(|(p, len)| p.len() == len && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// 把解析结果落库到 `connection_logs`。参数化 INSERT。
-pub async fn persist_one(pool: &SqlitePool, parsed: &ParsedAccess, raw: &str) -> AppResult<()> {
+/// 把一批解析结果在单个事务内落库，摊销 fsync 与写锁开销（访问日志
+/// 高频时逐行 INSERT 会让每次写入都独占数据库）。
+pub async fn persist_batch(pool: &SqlitePool, batch: &[(ParsedAccess, String)]) -> AppResult<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
     let now = now_unix();
-    sqlx::query(
-        "INSERT INTO connection_logs \
-            (logged_at, uuid, src_addr, dest, status, reason, raw_message, received_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(parsed.logged_at.unwrap_or(now))
-    .bind(parsed.uuid.clone().unwrap_or_default())
-    .bind(parsed.src_addr.clone())
-    .bind(parsed.dest.clone())
-    .bind(&parsed.status)
-    .bind(parsed.reason.clone())
-    .bind(raw)
-    .bind(now)
-    .execute(pool)
-    .await
-    .map_err(crate::error::AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
+    for (parsed, raw) in batch {
+        sqlx::query(
+            "INSERT INTO connection_logs \
+                (logged_at, uuid, src_addr, dest, status, reason, raw_message, received_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(parsed.logged_at.unwrap_or(now))
+        .bind(parsed.uuid.clone().unwrap_or_default())
+        .bind(parsed.src_addr.clone())
+        .bind(parsed.dest.clone())
+        .bind(&parsed.status)
+        .bind(parsed.reason.clone())
+        .bind(raw)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(crate::error::AppError::Database)?;
+    }
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
     Ok(())
 }
 
-/// 消费 stderr 行通道：解析每行，识别为访问日志行的落库。通道关闭
-/// （面板 shutdown）时退出循环。
+/// 消费 stderr 行通道：攒批解析并落库。批触发条件：攒满 [`BATCH_SIZE`]
+/// 行，或通道暂时无更多可读行（try_recv 清空即冲刷）。通道关闭（面板
+/// shutdown）时退出循环。
+const BATCH_SIZE: usize = 50;
+
 pub async fn run_log_line_loop(pool: SqlitePool, mut rx: mpsc::Receiver<String>) {
-    while let Some(line) = rx.recv().await {
-        let Some(parsed) = parse_access_line(&line) else {
-            continue;
+    loop {
+        let Some(first) = rx.recv().await else {
+            return;
         };
-        if let Err(e) = persist_one(&pool, &parsed, &line).await {
-            tracing::warn!(error = %e, "connection log insert failed");
+        let mut lines = vec![first];
+        while lines.len() < BATCH_SIZE {
+            match rx.try_recv() {
+                Ok(line) => lines.push(line),
+                Err(_) => break,
+            }
+        }
+
+        let batch: Vec<(ParsedAccess, String)> = lines
+            .into_iter()
+            .filter_map(|line| parse_access_line(&line).map(|parsed| (parsed, line)))
+            .collect();
+        if batch.is_empty() {
+            continue;
+        }
+        if let Err(e) = persist_batch(&pool, &batch).await {
+            tracing::warn!(error = %e, count = batch.len(), "connection log batch insert failed");
         }
     }
 }

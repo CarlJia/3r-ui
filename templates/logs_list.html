@@ -140,7 +140,7 @@
           {% for e in entries %}
           <tr>
             <td>{{ e.logged_at_iso }}</td>
-            <td>{% if e.uuid.is_empty() %}<span class="muted">未知</span>{% else %}<span class="uuid">{{ e.uuid[..8] }}…</span>{% endif %}</td>
+            <td>{% if e.uuid_preview.is_empty() %}<span class="muted">未知</span>{% else %}<span class="uuid">{{ e.uuid_preview }}…</span>{% endif %}</td>
             <td>{% match e.src_addr %}{% when Some with (s) %}{{ s }}{% when None %}<span class="muted">—</span>{% endmatch %}</td>
             <td>{% match e.dest %}{% when Some with (d) %}{{ d }}{% when None %}<span class="muted">—</span>{% endmatch %}</td>
             <td>

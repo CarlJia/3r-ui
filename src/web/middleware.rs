@@ -177,3 +177,42 @@ pub const SECURITY_HEADERS: [(&str, &str); 4] = [
         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
     ),
 ];
+
+/// Render an HTML page with the standard security headers and any Set-Cookie
+/// values from `jar` appended. Shared by the admin page handlers so each one
+/// doesn't hand-maintain the cookie-forwarding + header decoration.
+pub(crate) fn render_page(
+    jar: axum_extra::extract::cookie::CookieJar,
+    status: StatusCode,
+    body: String,
+) -> Response {
+    let mut response = (status, axum::response::Html(body)).into_response();
+    for cookie in jar.iter() {
+        if let Ok(v) = cookie.encoded().to_string().parse() {
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, v);
+        }
+    }
+    for (name, value) in SECURITY_HEADERS {
+        response.headers_mut().insert(
+            axum::http::HeaderName::from_bytes(name.as_bytes()).expect("static header name"),
+            axum::http::HeaderValue::from_static(value),
+        );
+    }
+    response
+}
+
+/// Minimal percent-encoding for query-string values in template-rendered
+/// links. Shared by the share-link builder and the logs page's pagination.
+pub(crate) fn url_encode(input: &str) -> String {
+    input
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}

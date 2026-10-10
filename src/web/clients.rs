@@ -16,7 +16,7 @@ use axum_extra::extract::cookie::CookieJar;
 use crate::crypto::session::parse_expiry;
 use crate::crypto::uuid;
 use crate::db::models::{Client, Inbound};
-use crate::web::middleware::{csrf_from_cookies, CurrentAdmin, SECURITY_HEADERS};
+use crate::web::middleware::{csrf_from_cookies, url_encode, CurrentAdmin, SECURITY_HEADERS};
 use crate::web::AppState;
 use crate::xray::config;
 use crate::xray::SupervisorCommand;
@@ -28,7 +28,7 @@ pub const BYTES_PER_GB: i64 = 1024 * 1024 * 1024;
 #[template(path = "clients_list.html", escape = "html")]
 struct ClientsListTemplate {
     csrf: String,
-    clients: Vec<ClientView>,
+    clients: Vec<ClientListView>,
     has_inbound: bool,
 }
 
@@ -62,6 +62,21 @@ pub struct ClientView {
     pub expiry_date: Option<String>,
     pub status: String,
     pub active: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct ClientTrafficRow {
+    #[sqlx(flatten)]
+    client: Client,
+    uplink: i64,
+    downlink: i64,
+}
+
+struct ClientListView {
+    base: ClientView,
+    used: String,
+    uplink: String,
+    downlink: String,
 }
 
 impl ClientView {
@@ -98,17 +113,41 @@ pub async fn list(
         tracing::warn!(error = %e, "expired-client sweep failed before list");
     }
     let has_inbound = current_inbound(&state).await.is_ok_and(|i| i.is_some());
-    let rows = sqlx::query_as::<_, Client>(
-        "SELECT id, inbound_id, uuid, name, quota_bytes, expiry_at, status, created_at \
-         FROM clients WHERE status != 'deleted' ORDER BY id DESC",
+    let rows = match sqlx::query_as::<_, ClientTrafficRow>(
+        "SELECT c.id, c.inbound_id, c.uuid, c.name, c.quota_bytes, c.expiry_at, \
+                c.status, c.created_at, COALESCE(t.uplink, 0) AS uplink, \
+                COALESCE(t.downlink, 0) AS downlink \
+         FROM clients c LEFT JOIN traffic_snapshots t ON t.rowid = ( \
+           SELECT s.rowid FROM traffic_snapshots s WHERE s.client_id = c.id \
+           ORDER BY s.recorded_at DESC, s.rowid DESC LIMIT 1 \
+         ) WHERE c.status != 'deleted' ORDER BY c.id DESC",
     )
     .fetch_all(&state.pool)
     .await
-    .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to read client traffic");
+            return page(
+                jar,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "无法读取用户流量".to_string(),
+            );
+        }
+    };
+    let clients = rows
+        .iter()
+        .map(|row| ClientListView {
+            base: ClientView::from(&row.client),
+            uplink: format_traffic(row.uplink),
+            downlink: format_traffic(row.downlink),
+            used: format_traffic(row.uplink.saturating_add(row.downlink)),
+        })
+        .collect();
 
     let html = ClientsListTemplate {
         csrf: csrf_from_cookies(&jar),
-        clients: rows.iter().map(ClientView::from).collect(),
+        clients,
         has_inbound,
     }
     .render()
@@ -351,18 +390,6 @@ async fn load_active_inbound(pool: &sqlx::SqlitePool) -> crate::error::AppResult
     .map_err(crate::error::AppError::Database)
 }
 
-fn url_encode(input: &str) -> String {
-    input
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
 /// `POST /admin/clients/:id` — update name / quota / expiry; UUID immutable.
 pub async fn update(
     State(state): State<AppState>,
@@ -588,6 +615,20 @@ fn decorate(mut response: Response, jar: Option<&CookieJar>) -> Response {
         );
     }
     response
+}
+
+fn format_traffic(bytes: i64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB"] {
+        if value < 1024.0 || unit == "TiB" {
+            return format!("{value:.2} {unit}");
+        }
+        value /= 1024.0;
+    }
+    unreachable!()
 }
 
 fn timestamp_to_iso_date(ts: i64) -> Option<String> {

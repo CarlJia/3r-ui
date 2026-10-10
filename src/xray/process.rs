@@ -191,6 +191,7 @@ impl XraySupervisor {
                     .ok();
                 let mut reader = BufReader::new(stderr);
                 let mut buf = String::new();
+                let mut dropped: u64 = 0;
                 loop {
                     buf.clear();
                     match reader.read_line(&mut buf).await {
@@ -198,15 +199,33 @@ impl XraySupervisor {
                         Ok(_) => {}
                     }
                     let line = buf.trim_end();
-                    tracing::warn!(target: "xray", "{}", line);
+                    // access 行（连接请求日志）已由 logs worker 落库，面板
+                    // 日志里降级到 debug；xray 的 error/warning 行保持 warn。
+                    if crate::xray::logs::is_access_log_line(line) {
+                        tracing::debug!(target: "xray", "{}", line);
+                    } else {
+                        tracing::warn!(target: "xray", "{}", line);
+                    }
                     if let Some(f) = file.as_mut() {
                         use std::io::Write;
                         let _ = writeln!(f, "{}", line);
                     }
                     if let Some(tx) = &log_tx {
-                        // Receiver gone (panel shutting down) ends the loop.
-                        if tx.send(line.to_string()).await.is_err() {
-                            break;
+                        // 访问日志是监控数据，可容忍丢失：通道满时丢行计数
+                        // 打点，绝不反压到 xray 的 stderr 管道拖住代理流量；
+                        // 接收端关闭（面板 shutdown）才退出循环。
+                        match tx.try_send(line.to_string()) {
+                            Ok(()) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                dropped += 1;
+                                if dropped % 1024 == 1 {
+                                    tracing::warn!(
+                                        dropped,
+                                        "log receiver full; dropping xray access lines"
+                                    );
+                                }
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                         }
                     }
                 }

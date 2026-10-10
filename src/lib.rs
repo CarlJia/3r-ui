@@ -53,8 +53,8 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     let xray_bin = ensure_xray_binary(&config).await;
     let config_path = config.data_dir.join("xray").join("config.json");
 
-    // xray stderr 的 access-log 行通道：supervisor 捕获 stderr，把每行送进
-    // logs worker；worker 解析访问日志行并落库 connection_logs。
+    // xray_log_rx 由访问日志接收 worker 消费（见下方 spawn）；通道满时
+    // supervisor 丢行而不是反压 xray，见 XraySupervisor::new 的字段契约。
     let (xray_log_tx, xray_log_rx) = mpsc::channel::<String>(256);
 
     let supervisor = xray::XraySupervisor::new(
