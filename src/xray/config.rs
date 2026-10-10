@@ -35,7 +35,14 @@ pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
     }
 
     let config = json!({
-        "log": { "loglevel": "warning" },
+        // access = "@stderr" 让每条连接请求走 stderr（面板 process.rs 已经
+        // 捕获），日志行由 src/xray/logs.rs 解析后落库 connection_logs。
+        // error 同样走 stderr，默认即如此，显式写出避免版本差异。
+        "log": {
+            "loglevel": "warning",
+            "access": "@stderr",
+            "error": "@stderr",
+        },
         "stats": {},
         "api": {
             "services": ["StatsService"],

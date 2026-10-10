@@ -1,0 +1,10 @@
+<aside class="sidebar" aria-label="后台导航">
+  <a class="brand" href="/admin">3R-UI</a>
+  <p class="nav-label">管理</p>
+  <nav aria-label="主菜单">
+    <a class="nav-link {% if nav_active == "dashboard" %}active{% endif %}" {% if nav_active == "dashboard" %}aria-current="page"{% endif %} href="/admin">控制台</a>
+    <a class="nav-link {% if nav_active == "inbound" %}active{% endif %}" {% if nav_active == "inbound" %}aria-current="page"{% endif %} href="/admin/inbound">入站配置</a>
+    <a class="nav-link {% if nav_active == "clients" %}active{% endif %}" {% if nav_active == "clients" %}aria-current="page"{% endif %} href="/admin/clients">用户列表</a>
+    <a class="nav-link {% if nav_active == "logs" %}active{% endif %}" {% if nav_active == "logs" %}aria-current="page"{% endif %} href="/admin/logs">连接日志</a>
+  </nav>
+</aside>

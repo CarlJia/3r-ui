@@ -23,16 +23,20 @@ pub struct Services {
     supervisor_handle: tokio::task::JoinHandle<()>,
     http_handle: tokio::task::JoinHandle<()>,
     stats_handle: tokio::task::JoinHandle<()>,
+    logs_handle: tokio::task::JoinHandle<()>,
+    prune_handle: tokio::task::JoinHandle<()>,
 }
 
 impl Services {
-    /// Stop the HTTP server, the xray supervisor, and the stats poll loop,
-    /// then wait for all three.
+    /// Stop the HTTP server, the xray supervisor, the stats poll loop, the
+    /// access-log receiver, and the retention pruner, then wait.
     pub async fn shutdown(self) {
         let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;
         self.stats_handle.abort();
+        self.logs_handle.abort();
+        self.prune_handle.abort();
         self.http_handle.abort();
     }
 }
@@ -49,7 +53,16 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     let xray_bin = ensure_xray_binary(&config).await;
     let config_path = config.data_dir.join("xray").join("config.json");
 
-    let supervisor = xray::XraySupervisor::new(xray_bin, config_path, config.data_dir.clone());
+    // xray stderr 的 access-log 行通道：supervisor 捕获 stderr，把每行送进
+    // logs worker；worker 解析访问日志行并落库 connection_logs。
+    let (xray_log_tx, xray_log_rx) = mpsc::channel::<String>(256);
+
+    let supervisor = xray::XraySupervisor::new(
+        xray_bin,
+        config_path,
+        config.data_dir.clone(),
+        Some(xray_log_tx),
+    );
     let (supervisor_tx, supervisor_rx) = mpsc::channel::<xray::SupervisorCommand>(16);
     let supervisor_handle = tokio::spawn(async move {
         if let Err(e) = supervisor.run(supervisor_rx).await {
@@ -110,12 +123,21 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         supervisor_tx.clone(),
     ));
 
+    // 访问日志接收：supervisor 把 xray stderr 每行送进本 worker；worker 解析
+    // 访问日志行并落库。通道关闭（面板 shutdown）时循环自然退出。
+    let logs_handle = tokio::spawn(xray::logs::run_log_line_loop(pool.clone(), xray_log_rx));
+
+    // 保留清理：每小时删除 30 天前的 connection_logs 行。
+    let prune_handle = tokio::spawn(xray::logs::prune_loop(pool.clone()));
+
     Ok(Services {
         pool,
         supervisor_tx,
         supervisor_handle,
         http_handle,
         stats_handle,
+        logs_handle,
+        prune_handle,
     })
 }
 

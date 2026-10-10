@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 连接日志</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input, select { background: #16181d !important; color: #e6e8eb !important;
+                      border-color: #2c3037 !important; }
+      table { border-color: #2c3037 !important; }
+      th, td { border-color: #2c3037 !important; }
+      .status-accepted { background: #16351f !important; color: #6ee7a0 !important; }
+      .status-rejected { background: #3a1f22 !important; color: #ff9b9b !important; }
+      .uuid { background: #16181d !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+               gap: 0 12px; align-items: end; }
+    .filters label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 4px; }
+    .filters input, .filters select {
+      width: 100%; padding: 7px 9px; font-size: 13px; border-radius: 8px;
+      border: 1px solid #d5d9de; background: #fff; color: inherit;
+    }
+    .filters button {
+      padding: 8px 14px; font-size: 13px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; background: #3b82f6; color: #fff;
+    }
+    .empty { font-size: 13px; opacity: .6; padding: 12px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td {
+      text-align: left; padding: 8px 10px; border-bottom: 1px solid #eceef1;
+      vertical-align: middle;
+    }
+    th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase; }
+    .uuid {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; background: #f4f5f7; padding: 2px 6px;
+      border-radius: 4px; display: inline-block;
+    }
+    .status {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+    }
+    .status-accepted { background: #e3f5e9; color: #1a7f42; }
+    .status-rejected { background: #fdecec; color: #a4262c; }
+    .muted { opacity: .6; font-size: 12px; }
+    .detail-preview {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; opacity: .75; display: inline-block; max-width: 320px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      vertical-align: middle;
+    }
+    .pagination { display: flex; gap: 10px; align-items: center; margin-top: 14px;
+                  font-size: 13px; }
+    .pagination a { color: #3b82f6; text-decoration: none; }
+    .pagination a.disabled { opacity: .35; pointer-events: none; }
+    .pagination .muted { margin-left: auto; }
+    .table-scroll { overflow-x: auto; }
+    {% include "sidebar_style.html" %}
+  </style>
+</head>
+<body>
+  {% let nav_active = "logs" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
+  <header>
+    <h1>连接日志</h1>
+  </header>
+  <main>
+    <section class="card">
+      <h2>访问记录</h2>
+      <p class="hint">xray 入站每次连接请求的访问日志；默认展示最近 50 条，可按用户 / 时间 / 结果筛选。</p>
+
+      <form method="get" action="/admin/logs" class="filters">
+        <div>
+          <label for="f-uuid">UUID</label>
+          <input type="text" id="f-uuid" name="uuid" value="{{ filters.uuid }}"
+                 placeholder="完整 UUID" maxlength="64">
+        </div>
+        <div>
+          <label for="f-from">从</label>
+          <input type="date" id="f-from" name="from" value="{{ filters.from }}">
+        </div>
+        <div>
+          <label for="f-to">到</label>
+          <input type="date" id="f-to" name="to" value="{{ filters.to }}">
+        </div>
+        <div>
+          <label for="f-status">结果</label>
+          <select id="f-status" name="status">
+            <option value="">全部</option>
+            <option value="accepted" {% if filters.status == "accepted" %}selected{% endif %}>已接受</option>
+            <option value="rejected" {% if filters.status == "rejected" %}selected{% endif %}>已拒绝</option>
+          </select>
+        </div>
+        <div>
+          <button type="submit">筛选</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      {% if entries.is_empty() %}
+      <p class="empty">暂无日志。</p>
+      {% else %}
+      <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>UUID</th>
+            <th>来源</th>
+            <th>目标</th>
+            <th>结果</th>
+            <th>详情</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in entries %}
+          <tr>
+            <td>{{ e.logged_at_iso }}</td>
+            <td>{% if e.uuid.is_empty() %}<span class="muted">未知</span>{% else %}<span class="uuid">{{ e.uuid[..8] }}…</span>{% endif %}</td>
+            <td>{% match e.src_addr %}{% when Some with (s) %}{{ s }}{% when None %}<span class="muted">—</span>{% endmatch %}</td>
+            <td>{% match e.dest %}{% when Some with (d) %}{{ d }}{% when None %}<span class="muted">—</span>{% endmatch %}</td>
+            <td>
+              <span class="status {% if e.status == "accepted" %}status-accepted{% else %}status-rejected{% endif %}">
+                {% if e.status == "accepted" %}已接受{% else %}已拒绝{% endif %}
+              </span>
+              {% match e.reason %}{% when Some with (r) %}<span class="muted" style="margin-left:6px">{{ r }}</span>{% when None %}{% endmatch %}
+            </td>
+            <td>
+              <span class="detail-preview" title="{{ e.raw_message }}">{{ e.detail_preview }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+
+      <div class="pagination">
+        {% if has_prev %}
+        <a href="/admin/logs?page={{ page - 1 }}&uuid={{ filters.url_encoded_uuid }}&from={{ filters.from }}&to={{ filters.to }}&status={{ filters.status }}">← 上一页</a>
+        {% else %}
+        <a class="disabled" href="#">← 上一页</a>
+        {% endif %}
+        {% if has_next %}
+        <a href="/admin/logs?page={{ page + 1 }}&uuid={{ filters.url_encoded_uuid }}&from={{ filters.from }}&to={{ filters.to }}&status={{ filters.status }}">下一页 →</a>
+        {% else %}
+        <a class="disabled" href="#">下一页 →</a>
+        {% endif %}
+        <span class="muted">第 {{ page }} 页</span>
+      </div>
+      {% endif %}
+    </section>
+  </main>
+  </div>
+</body>
+</html>

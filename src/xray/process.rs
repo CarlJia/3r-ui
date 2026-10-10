@@ -83,16 +83,26 @@ pub struct XraySupervisor {
     config_path: PathBuf,
     pid_file: PathBuf,
     log_file: PathBuf,
+    /// 可选的 stderr 行通道：面板（lib.rs）把 `Some(tx)` 传进来，让
+    /// `spawn` 把 xray 的每一行 stderr 同时送进 `src/xray/logs.rs` 做
+    /// access-log 解析与落库。测试场景传 `None` 只写 tracing / 文件。
+    log_tx: Option<mpsc::Sender<String>>,
     state: Arc<Mutex<SupervisorState>>,
 }
 
 impl XraySupervisor {
-    pub fn new(xray_bin: PathBuf, config_path: PathBuf, data_dir: PathBuf) -> Self {
+    pub fn new(
+        xray_bin: PathBuf,
+        config_path: PathBuf,
+        data_dir: PathBuf,
+        log_tx: Option<mpsc::Sender<String>>,
+    ) -> Self {
         Self {
             xray_bin,
             config_path,
             pid_file: data_dir.join("xray.pid"),
             log_file: data_dir.join("xray.log"),
+            log_tx,
             state: Arc::new(Mutex::new(SupervisorState::default())),
         }
     }
@@ -166,26 +176,38 @@ impl XraySupervisor {
             }
         }
 
-        // Forward stderr to a rolling log file + tracing.
+        // Forward stderr to the rolling log file + tracing, and (when the
+        // panel wired a receiver) to the access-log parse-and-persist worker.
         if let Some(stderr) = child.stderr.take() {
             let log_path = self.log_file.clone();
+            let log_tx = self.log_tx.clone();
             tokio::spawn(async move {
-                if let Ok(file) = std::fs::OpenOptions::new()
+                // Open the log file once, up front; the handle lives as long
+                // as this task, so every read-line iteration can append.
+                let mut file = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&log_path)
-                {
-                    let mut reader = BufReader::new(stderr);
-                    let mut buf = String::new();
-                    while let Ok(n) = reader.read_line(&mut buf).await {
-                        if n == 0 {
+                    .ok();
+                let mut reader = BufReader::new(stderr);
+                let mut buf = String::new();
+                loop {
+                    buf.clear();
+                    match reader.read_line(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let line = buf.trim_end();
+                    tracing::warn!(target: "xray", "{}", line);
+                    if let Some(f) = file.as_mut() {
+                        use std::io::Write;
+                        let _ = writeln!(f, "{}", line);
+                    }
+                    if let Some(tx) = &log_tx {
+                        // Receiver gone (panel shutting down) ends the loop.
+                        if tx.send(line.to_string()).await.is_err() {
                             break;
                         }
-                        tracing::warn!(target: "xray", "{}", buf.trim_end());
-                        buf.clear();
-                        // Log file handle is dropped at end of task; tracing
-                        // handles its own buffering.
-                        let _ = file;
                     }
                 }
             });

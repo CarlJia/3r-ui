@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod clients;
 pub mod inbound;
+pub mod logs;
 pub mod middleware;
 
 use axum::routing::{get, post};
@@ -47,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/clients/:id", post(clients::update))
         .route("/admin/clients/:id/delete", post(clients::delete))
         .route("/admin/clients/:id/qr.png", get(clients::qr_png))
+        .route("/admin/logs", get(logs::list))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_session,

@@ -52,3 +52,18 @@ pub struct Session {
     pub expires_at: i64,
     pub created_at: i64,
 }
+
+/// 一条 xray 访问日志（来自 xray stderr 的 access log 行，由
+/// [`crate::xray::logs`] 解析后落库）。见 `migrations/0003_connection_logs.sql`。
+#[derive(Debug, Clone, FromRow)]
+pub struct ConnectionLog {
+    pub id: i64,
+    pub logged_at: i64,
+    pub uuid: String,
+    pub src_addr: Option<String>,
+    pub dest: Option<String>,
+    pub status: String,
+    pub reason: Option<String>,
+    pub raw_message: String,
+    pub received_at: i64,
+}

@@ -65,7 +65,7 @@ async fn supervisor_spawns_stub_and_writes_pid_file() {
     let (xray_bin, config_path) = setup(&tmp);
     write_stub_alive(&xray_bin);
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf());
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -93,7 +93,7 @@ async fn graceful_stop_terminates_the_child() {
     let (xray_bin, config_path) = setup(&tmp);
     write_stub_alive(&xray_bin);
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf());
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -131,7 +131,12 @@ async fn crashing_child_is_restarted_after_backoff() {
     // Exits immediately with code 7 — supervisor must detect and respawn.
     write_stub_crashing(&xray_bin, 7);
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path.clone(), tmp.path().to_path_buf());
+    let supervisor = XraySupervisor::new(
+        xray_bin,
+        config_path.clone(),
+        tmp.path().to_path_buf(),
+        None,
+    );
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -191,7 +196,7 @@ exec sleep 3600
     std::fs::write(&xray_bin, body).unwrap();
     std::fs::set_permissions(&xray_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf());
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -234,7 +239,7 @@ async fn stale_pid_file_from_previous_run_is_reaped() {
     std::fs::write(tmp.path().join("xray.pid"), orphan_pid.to_string()).unwrap();
     assert!(process_alive(orphan_pid));
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf());
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -266,7 +271,7 @@ async fn reload_signal_is_delivered_to_the_child() {
     let (xray_bin, config_path) = setup(&tmp);
     write_stub_alive(&xray_bin);
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf());
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -303,7 +308,7 @@ async fn missing_binary_backs_off_without_panicking() {
     let (xray_bin, config_path) = setup(&tmp);
     // Deliberately do NOT create xray_bin — spawn will fail.
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf());
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
