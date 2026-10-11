@@ -1,4 +1,4 @@
--- U11: 连接日志持久化。
+-- U1: 连接日志持久化。
 --
 -- 每条 xray 访问日志（从 xray stderr 的 access log 行解析而来）落一条记录。
 -- uuid 对应 VLESS client 的 email（= 客户端 UUID）；src_addr 是连接来源
