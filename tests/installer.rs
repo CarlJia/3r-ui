@@ -1,10 +1,8 @@
-//! Tests for U2: xray-core auto-download and install.
+//! Tests for xray-core auto-download and install.
 //!
 //! Uses `wiremock` to stand in for the GitHub releases API and a fixture ZIP
 //! built in-memory to verify extraction. No network or filesystem xray
 //! binary is required.
-
-use std::path::Path;
 
 use tempfile::tempdir;
 use three_r_ui::xray::Installer;
@@ -256,6 +254,145 @@ async fn ensure_xray_missing_asset_returns_actionable_error() {
     );
 }
 
-// Suppress unused-import warnings for paths brought in by build.rs feature gating.
-#[allow(dead_code)]
-fn _paths(_p: &Path) {}
+// ─── install_version tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn install_version_downloads_latest_into_staging() {
+    let server = stand_up_release_endpoint(build_minimal_xray_zip("v1.8.5"), 200).await;
+    let dir = tempdir().unwrap();
+    let installer = Installer::new(server.uri()).unwrap();
+
+    let (xray_path, tag) = installer
+        .install_version(dir.path(), None)
+        .await
+        .expect("install_version should succeed");
+
+    assert!(xray_path.is_file(), "xray should exist at {}", xray_path.display());
+    assert_eq!(&tag, "v1.8.5");
+
+    // Staging directory should exist (not cleaned up — caller is responsible).
+    let staging_parent = xray_path.parent().unwrap();
+    let staging_name = staging_parent.file_name().unwrap().to_str().unwrap();
+    assert!(
+        staging_name.starts_with("xray-v1.8.5-staging-"),
+        "staging dir name: {staging_name}"
+    );
+}
+
+#[tokio::test]
+async fn install_version_explicit_tag_only_hits_tag_route() {
+    // Mock the /releases/tags/v1.8.10 route (not /releases/latest).
+    let server = MockServer::start().await;
+    let asset_name = current_asset_name();
+    let body = serde_json::json!({
+        "tag_name": "v1.8.10",
+        "assets": [{
+            "name": asset_name,
+            "browser_download_url": format!("{}/xray.zip", server.uri()),
+            "size": 0,
+        }]
+    });
+
+    // Only mount the tags endpoint — no /releases/latest mock.
+    Mock::given(method("GET"))
+        .and(path("/XTLS/Xray-core/releases/tags/v1.8.10"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&server)
+        .await;
+
+    let archive = build_minimal_xray_zip("v1.8.10");
+    Mock::given(method("GET"))
+        .and(path("/xray.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+        .mount(&server)
+        .await;
+
+    let dir = tempdir().unwrap();
+    let installer = Installer::new(server.uri()).unwrap();
+
+    let (xray_path, tag) = installer
+        .install_version(dir.path(), Some("v1.8.10"))
+        .await
+        .expect("install_version with explicit tag should succeed");
+
+    assert!(xray_path.is_file());
+    assert_eq!(&tag, "v1.8.10");
+
+    // Verify no /releases/latest was called.
+    let latest_hits = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.url.path().contains("latest"))
+        .count();
+    assert_eq!(latest_hits, 0, "/releases/latest should not have been called");
+}
+
+#[tokio::test]
+async fn install_version_http_429_returns_error_no_staging() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/XTLS/Xray-core/releases/latest"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .mount(&server)
+        .await;
+
+    let dir = tempdir().unwrap();
+    let installer = Installer::new(server.uri()).unwrap();
+
+    let err = installer
+        .install_version(dir.path(), None)
+        .await
+        .expect_err("install_version should error on 429");
+
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("429") || msg.contains("rate-limited"),
+        "msg: {msg}"
+    );
+
+    // No staging directory should be left behind.
+    let entries = std::fs::read_dir(dir.path()).unwrap();
+    let staging_dirs: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("staging"))
+        .collect();
+    assert!(
+        staging_dirs.is_empty(),
+        "no staging dirs expected, got: {staging_dirs:?}"
+    );
+}
+
+#[tokio::test]
+async fn install_version_missing_asset_returns_error() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "tag_name": "v99.0.0",
+        "assets": [{
+            // Asset name does not match the current platform.
+            "name": "Xray-some-other-platform.zip",
+            "browser_download_url": format!("{}/xray.zip", server.uri()),
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path("/XTLS/Xray-core/releases/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let dir = tempdir().unwrap();
+    let installer = Installer::new(server.uri()).unwrap();
+
+    let err = installer
+        .install_version(dir.path(), None)
+        .await
+        .expect_err("install_version should error on missing asset");
+
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no asset") || msg.contains("for this platform"),
+        "msg: {msg}"
+    );
+}
