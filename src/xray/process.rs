@@ -148,6 +148,11 @@ impl XraySupervisor {
         cmd.arg("run")
             .arg("-c")
             .arg(&self.config_path)
+            // xray-core 的 stderr logger 写 `time.Now()`（本地时间）且不开
+            // `log.LUTC`。面板把日志时间戳按 UTC 解析，所以必须把 xray
+            // 的 `TZ` 强制锁定为 UTC，否则 `parse_xray_timestamp` 会把
+            // 接入主机时区偏移塞进 `logged_at`。
+            .env("TZ", "UTC")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -199,16 +204,19 @@ impl XraySupervisor {
                         Ok(_) => {}
                     }
                     let line = buf.trim_end();
-                    // access 行（连接请求日志）已由 logs worker 落库，面板
-                    // 日志里降级到 debug；xray 的 error/warning 行保持 warn。
-                    if crate::xray::logs::is_access_log_line(line) {
+                    let access = crate::xray::logs::is_access_log_line(line);
+                    // access 行（连接请求日志）已由 logs worker 落库到
+                    // SQLite；写入 xray.log 会在代理流量大时无界增长——跳过。
+                    // 面板日志里 access 行降级为 debug，error/warning 行
+                    // 保持 warn。
+                    if access {
                         tracing::debug!(target: "xray", "{}", line);
                     } else {
                         tracing::warn!(target: "xray", "{}", line);
-                    }
-                    if let Some(f) = file.as_mut() {
-                        use std::io::Write;
-                        let _ = writeln!(f, "{}", line);
+                        if let Some(f) = file.as_mut() {
+                            use std::io::Write;
+                            let _ = writeln!(f, "{}", line);
+                        }
                     }
                     if let Some(tx) = &log_tx {
                         // 访问日志是监控数据，可容忍丢失：通道满时丢行计数

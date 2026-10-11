@@ -34,11 +34,14 @@ pub struct ParsedAccess {
     pub reason: Option<String>,
 }
 
-/// 解析 `YYYY/MM/DD HH:MM:SS` 格式的 xray 时间戳前缀为 Unix 秒。
-/// 失败返回 `None`（调用方回退到 `received_at`）。字段走 `time` crate
-/// 的日历校验，越界值（month 13、hour 25 等）返回 `None` 而非算出垃圾。
+/// 解析 `YYYY/MM/DD HH:MM:SS[.ffffff]` 格式的 xray 时间戳前缀为 Unix 秒。
+/// xray-core 的 stderr logger 启用 `log.Lmicroseconds`，所以真实行末尾
+/// 有 `.微秒` 片段；解析失败（如月 13 / 时 25）回退为 `None`，调用方
+/// 回退到 `received_at`。xray 写本地时间（`time.Now()`，无 `log.LUTC`），
+/// 因此面板必须在 spawn xray 时设 `TZ=UTC`（见 `process.rs`），否则
+/// 解析出的 `logged_at` 会带主机 UTC 偏移、让 30 天保留窗口与日期筛选
+/// 漂移最多 ±14h。
 fn parse_xray_timestamp(line: &str) -> Option<i64> {
-    // xray 默认 `2006/01/02 15:04:05`；日期与时间之间一个空格。
     let rest = line.trim_start();
     let (date, after_date) = rest.split_once(' ')?;
     let (time_str, _) = after_date.trim_start().split_once(' ')?;
@@ -47,11 +50,12 @@ fn parse_xray_timestamp(line: &str) -> Option<i64> {
     let year: i32 = y.parse().ok()?;
     let month: u8 = mo.parse().ok()?;
     let day: u8 = d.parse().ok()?;
-    let (h, rest) = time_str.split_once(':')?;
-    let (mi, s) = rest.split_once(':')?;
+    let (h, mi_and_s) = time_str.split_once(':')?;
+    let (mi, sec_frac) = mi_and_s.split_once(':')?;
+    let (sec_str, _) = sec_frac.split_once('.').unwrap_or((sec_frac, "")); // microseconds 以 `.` 起头
     let hour: u8 = h.parse().ok()?;
     let minute: u8 = mi.parse().ok()?;
-    let second: u8 = s.parse().ok()?;
+    let second: u8 = sec_str.parse().ok()?;
 
     let date =
         time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()?;
@@ -329,6 +333,15 @@ mod tests {
     fn timestamp_parses_civil_datetime() {
         // 2026-01-15 10:23:45 UTC = 1768472625
         let ts = parse_xray_timestamp("2026/01/15 10:23:45 rest").expect("timestamp");
+        assert_eq!(ts, 1768472625);
+    }
+
+    #[test]
+    fn timestamp_parses_microsecond_suffix() {
+        // xray-core 的 stderr logger 启用 `log.Lmicroseconds`，真实行
+        // 末尾有 `.微秒` 片段；解析应忽略它而不是当作坏数据拒绝。
+        let ts =
+            parse_xray_timestamp("2026/01/15 10:23:45.123456 rest").expect("with microseconds");
         assert_eq!(ts, 1768472625);
     }
 }

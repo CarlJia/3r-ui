@@ -19,6 +19,9 @@ use crate::web::AppState;
 /// 每页条数。LIMIT 多取一行判断 has_next。
 const PAGE_SIZE: i64 = 50;
 
+/// 页号上限，保证 `(page - 1) * PAGE_SIZE` 不溢出 i64。
+const MAX_PAGE: i64 = i64::MAX / PAGE_SIZE;
+
 #[derive(Debug, Clone, Default)]
 pub struct LogsFilters {
     pub uuid: String,
@@ -141,8 +144,10 @@ fn parse_filters(params: &std::collections::HashMap<String, String>) -> LogsFilt
         .get("page")
         .and_then(|s| s.trim().parse::<i64>().ok())
     {
+        // 上限防溢出：fetch_logs 会算 (page-1)*PAGE_SIZE，无上限时
+        // page 接近 i64::MAX 会 debug panic / release 回绕成负 OFFSET。
         if page >= 1 {
-            filters.page = page;
+            filters.page = page.min(MAX_PAGE);
         }
     }
     filters.url_encoded_uuid = url_encode(&filters.uuid);
