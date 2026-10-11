@@ -321,3 +321,119 @@ async fn missing_binary_backs_off_without_panicking() {
     let _ = tx.send(SupervisorCommand::Stop).await;
     let _ = tokio::time::timeout(Duration::from_secs(15), handle).await;
 }
+
+#[tokio::test]
+async fn restart_now_kills_child_and_respawns() {
+    let tmp = tempdir().unwrap();
+    let (xray_bin, config_path) = setup(&tmp);
+    write_stub_alive(&xray_bin);
+
+    let supervisor =
+        XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
+    let (tx, rx) = mpsc::channel(4);
+    let handle = tokio::spawn(supervisor.run(rx));
+
+    let pid_file = tmp.path().join("xray.pid");
+    let first_pid = loop {
+        if let Some(p) = read_pid(&pid_file) {
+            if process_alive(p) {
+                break p;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    // RestartNow: supervisor kills the child and immediately respawns.
+    tx.send(SupervisorCommand::RestartNow)
+        .await
+        .expect("send RestartNow");
+
+    let second_pid = loop {
+        if let Some(p) = read_pid(&pid_file) {
+            if process_alive(p) && p != first_pid {
+                break p;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    assert_ne!(
+        first_pid, second_pid,
+        "supervisor should spawn a new child with a different PID"
+    );
+    assert!(process_alive(second_pid), "new child should be alive");
+
+    let _ = tx.send(SupervisorCommand::Stop).await;
+    let _ = tokio::time::timeout(Duration::from_secs(15), handle).await;
+}
+
+#[tokio::test]
+async fn restart_now_then_stop_exits_cleanly() {
+    let tmp = tempdir().unwrap();
+    let (xray_bin, config_path) = setup(&tmp);
+    write_stub_alive(&xray_bin);
+
+    let supervisor =
+        XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
+    let (tx, rx) = mpsc::channel(4);
+    let handle = tokio::spawn(supervisor.run(rx));
+
+    let pid_file = tmp.path().join("xray.pid");
+    let _ = loop {
+        if let Some(p) = read_pid(&pid_file) {
+            if process_alive(p) {
+                break p;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    // RestartNow does NOT exit the loop; Stop must still terminate cleanly.
+    tx.send(SupervisorCommand::RestartNow)
+        .await
+        .expect("send RestartNow");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    tx.send(SupervisorCommand::Stop).await.expect("send Stop");
+    let result = tokio::time::timeout(Duration::from_secs(15), handle)
+        .await
+        .expect("supervisor should stop after RestartNow+Stop")
+        .expect("supervisor task should not panic");
+    assert!(result.is_ok(), "supervisor returned an error on Stop");
+}
+
+#[tokio::test]
+async fn restart_now_keeps_loop_alive_indefinitely() {
+    let tmp = tempdir().unwrap();
+    let (xray_bin, config_path) = setup(&tmp);
+    write_stub_alive(&xray_bin);
+
+    let supervisor =
+        XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
+    let (tx, rx) = mpsc::channel(4);
+    let handle = tokio::spawn(supervisor.run(rx));
+
+    let pid_file = tmp.path().join("xray.pid");
+    let _ = loop {
+        if let Some(p) = read_pid(&pid_file) {
+            if process_alive(p) {
+                break p;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    // Send RestartNow and nothing else; the supervisor loop must keep running.
+    tx.send(SupervisorCommand::RestartNow)
+        .await
+        .expect("send RestartNow");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !handle.is_finished(),
+        "supervisor loop should still be alive after RestartNow"
+    );
+
+    let _ = tx.send(SupervisorCommand::Stop).await;
+    let _ = tokio::time::timeout(Duration::from_secs(15), handle).await;
+}

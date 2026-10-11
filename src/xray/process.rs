@@ -66,10 +66,15 @@ const BACKOFF: [Duration; 7] = [
 ];
 const STABLE_RESET_AFTER: Duration = Duration::from_secs(300);
 
+// Stop and RestartNow have distinct semantics:
+// - Stop: panel shutdown; kills xray and terminates the supervisor loop.
+// - RestartNow: xray binary replacement; kills xray but keeps the supervisor
+//   loop alive so the next spawn picks up the new binary.
 #[derive(Debug, Clone)]
 pub enum SupervisorCommand {
     Reload,
     Stop,
+    RestartNow,
 }
 
 #[derive(Debug, Default)]
@@ -330,6 +335,10 @@ impl XraySupervisor {
                             if let Err(e) = self.reload().await {
                                 tracing::warn!(error = %e, "xray reload failed");
                             }
+                        }
+                        Some(SupervisorCommand::RestartNow) => {
+                            stop_child(&mut child).await;
+                            continue;
                         }
                     }
                 }
