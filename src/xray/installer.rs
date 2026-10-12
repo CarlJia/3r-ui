@@ -20,7 +20,7 @@ const XRAY_REPO: &str = "XTLS/Xray-core";
 const USER_AGENT: &str = concat!("3r-ui/", env!("CARGO_PKG_VERSION"));
 
 /// Asset filename suffix for the running target triple.
-fn asset_suffix() -> AppResult<&'static str> {
+pub(crate) fn asset_suffix() -> AppResult<&'static str> {
     let suffix = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux-64",
         ("linux", "aarch64") => "linux-arm64",
@@ -123,7 +123,7 @@ impl Installer {
 
     async fn fetch_release(&self, version: Option<&str>) -> AppResult<Release> {
         let url = if let Some(v) = version {
-            let encoded = urlencoding::encode(v);
+            let encoded = crate::web::middleware::url_encode(v);
             format!(
                 "{}/{}/releases/tags/{}",
                 self.download_base.trim_end_matches('/'),

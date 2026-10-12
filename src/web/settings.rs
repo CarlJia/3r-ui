@@ -138,12 +138,7 @@ pub async fn settings_page(
 
 /// Format a unix timestamp as an ISO datetime string in UTC.
 fn format_unix_time(ts: i64) -> String {
-    const FMT: &[time::format_description::BorrowedFormatItem<'_>] =
-        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
-    time::OffsetDateTime::from_unix_timestamp(ts)
-        .ok()
-        .and_then(|t| t.format(&FMT).ok())
-        .unwrap_or_else(|| ts.to_string())
+    crate::web::logs::timestamp_to_iso(ts)
 }
 
 #[derive(Template)]
@@ -401,15 +396,13 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
                 );
             }
         }
-        // Cleanup downloaded zip.
-        let suffix = if cfg!(windows) {
-            "windows-64"
-        } else {
-            "linux-64"
-        };
-        let zip_name = format!("Xray-{suffix}.zip");
-        let zip_path = data_dir.join("downloads").join(&zip_name);
-        let _ = std::fs::remove_file(&zip_path);
+        // Cleanup downloaded zip. Use the installer's own platform-suffix helper
+        // so the same path matches across download + cleanup on every OS/arch.
+        if let Ok(suffix) = crate::xray::installer::asset_suffix() {
+            let zip_name = format!("Xray-{suffix}.zip");
+            let zip_path = data_dir.join("downloads").join(&zip_name);
+            let _ = std::fs::remove_file(&zip_path);
+        }
     })
     .await;
 }

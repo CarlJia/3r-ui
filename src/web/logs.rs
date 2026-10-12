@@ -215,7 +215,7 @@ fn truncate_preview(raw: &str, max: usize) -> String {
     format!("{head}…")
 }
 
-fn timestamp_to_iso(ts: i64) -> String {
+pub(crate) fn timestamp_to_iso(ts: i64) -> String {
     const FMT: &[time::format_description::BorrowedFormatItem<'_>] =
         time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
     time::OffsetDateTime::from_unix_timestamp(ts)

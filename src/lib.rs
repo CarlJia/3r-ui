@@ -14,7 +14,6 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::xray::Installer;
 pub use config::AppConfig;
 pub use error::{AppError, AppResult};
 
@@ -57,7 +56,12 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     let pool = init_storage(&config).await?;
     ensure_initial_admin(&pool, &config.data_dir).await?;
 
-    let xray_bin = ensure_xray_binary(&config).await;
+    // Single shared Installer instance for both bootstrap and runtime updates,
+    // so its reqwest::Client connection pool is not duplicated.
+    let installer = std::sync::Arc::new(xray::Installer::new(
+        config.xray_download_base.clone(),
+    )?);
+    let xray_bin = ensure_xray_binary(&config, installer.clone()).await;
     let config_path = config.data_dir.join("xray").join("config.json");
 
     // xray_log_rx 由访问日志接收 worker 消费（见下方 spawn）；通道满时
@@ -89,10 +93,7 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         pool: pool.clone(),
         supervisor_tx: supervisor_tx.clone(),
         update_jobs: Arc::new(Mutex::new(HashMap::new())),
-        installer: Arc::new(
-            Installer::new(config.xray_download_base.clone())
-                .expect("installer must be constructible"),
-        ),
+        installer: installer.clone(),
         shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     // Clone the Arc handle for Services::shutdown before app_state is moved into the async block.
@@ -200,14 +201,10 @@ pub async fn init_storage(config: &AppConfig) -> AppResult<SqlitePool> {
     Ok(pool)
 }
 
-async fn ensure_xray_binary(config: &AppConfig) -> std::path::PathBuf {
-    let installer = match xray::Installer::new(config.xray_download_base.clone()) {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::warn!(error = %e, "xray installer init failed");
-            return default_xray_path(config);
-        }
-    };
+async fn ensure_xray_binary(
+    config: &AppConfig,
+    installer: std::sync::Arc<xray::Installer>,
+) -> std::path::PathBuf {
     match installer.ensure_xray(&config.data_dir).await {
         Ok(path) => {
             tracing::info!(path = %path.display(), "xray-core ready");
