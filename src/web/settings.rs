@@ -229,8 +229,10 @@ pub async fn trigger_update(
         .filter(|v| !v.is_empty())
         .map(|v| v.as_str());
 
-    // Concurrent guard: reject if any active job exists.
-    {
+    // Concurrent guard + insert under a single lock acquisition. Splitting
+    // these into two locks opened a TOCTOU race where two near-simultaneous
+    // POSTs could both pass the active-job check before either inserted.
+    let job_id_for_spawn = {
         let mut guard = state.update_jobs.lock().await;
         let has_active = guard.values().any(|j| is_active(&j.stage));
         if has_active {
@@ -244,16 +246,14 @@ pub async fn trigger_update(
             trim_and_insert(&mut guard, job_id, job);
             return Redirect::to("/admin/settings").into_response();
         }
-    }
-
-    let job_id = new_job_id();
-    let initial = JobStatus::new(job_id.clone(), JobStage::Queued, "排队中".to_string());
-    {
-        let mut guard = state.update_jobs.lock().await;
+        let job_id = new_job_id();
+        let initial =
+            JobStatus::new(job_id.clone(), JobStage::Queued, "排队中".to_string());
         trim_and_insert(&mut guard, job_id.clone(), initial);
-    }
+        job_id
+    };
 
-    spawn_update(state, job_id, version_opt);
+    spawn_update(state, job_id_for_spawn, version_opt);
     Redirect::to("/admin/settings").into_response()
 }
 
@@ -356,6 +356,17 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
     }
 
     if let Err(e) = std::fs::rename(&staging_xray, &canonical) {
+        // Promote failed: clean up the staging dir we no longer intend to keep,
+        // then report Failed. Without this, repeated failed renames leak
+        // extracted xray binaries + the downloaded zip on disk.
+        if let Some(parent) = staging_xray.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+        if let Ok(suffix) = crate::xray::installer::asset_suffix() {
+            let _ = std::fs::remove_file(
+                state.config.data_dir.join("downloads").join(format!("Xray-{suffix}.zip")),
+            );
+        }
         push_failed(&state, &job_id, format!("rename failed: {}", e)).await;
         return;
     }

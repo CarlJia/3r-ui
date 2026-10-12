@@ -328,3 +328,100 @@ async fn version_input_has_pattern_attribute() {
         "version input must have the specified pattern attribute"
     );
 }
+
+// ─── Background task lifecycle ────────────────────────────────────────────
+
+/// Drive `trigger_update` and wait until the job reaches a terminal stage
+/// (Succeeded or Failed) or the deadline passes. Returns the final JobStatus
+/// snapshot from the map (cloned under the lock).
+async fn wait_for_terminal(
+    state: &AppState,
+    job_id: &str,
+    deadline: std::time::Duration,
+) -> Option<JobStatus> {
+    let start = std::time::Instant::now();
+    loop {
+        {
+            let guard = state.update_jobs.lock().await;
+            if let Some(s) = guard.get(job_id) {
+                if matches!(s.stage, JobStage::Succeeded | JobStage::Failed) {
+                    return Some(s.clone());
+                }
+            }
+        }
+        if start.elapsed() > deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn run_update_advances_to_failed_when_installer_unreachable() {
+    // The harness's `xray_download_base` is set to http://127.0.0.1:1 (a
+    // guaranteed-fast-fail address) so install_version returns Err inside
+    // run_update. We assert the state machine reaches Failed through
+    // Downloading — the same path a real network failure would take.
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/xray/update")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!("csrf={csrf}&version=")))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    // Find the job that was just inserted.
+    let job_id = {
+        let guard = h.state.update_jobs.lock().await;
+        guard
+            .values()
+            .find(|j| j.stage == JobStage::Queued || j.stage == JobStage::Downloading || j.stage == JobStage::Failed)
+            .map(|j| j.id.clone())
+            .expect("expected a freshly inserted job")
+    };
+
+    let terminal = wait_for_terminal(&h.state, &job_id, std::time::Duration::from_secs(5))
+        .await
+        .expect("background task did not reach terminal stage within 5s");
+    assert_eq!(terminal.stage, JobStage::Failed);
+    assert!(terminal.finished_at.is_some(), "finished_at must be set on Failed");
+    assert!(terminal.error_message.is_some(), "error_message must be set on Failed");
+}
+
+#[tokio::test]
+async fn run_update_pushes_failed_when_shutdown_initiated_before_download() {
+    // Pre-set the shutdown flag so the run_update's pre-download check fires.
+    let h = boot().await;
+    h.state.shutdown_initiated.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (session, csrf) = login(&h).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/xray/update")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!("csrf={csrf}")))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let job_id = {
+        let guard = h.state.update_jobs.lock().await;
+        guard
+            .values()
+            .find(|j| matches!(j.stage, JobStage::Queued | JobStage::Failed))
+            .map(|j| j.id.clone())
+            .expect("expected a freshly inserted job")
+    };
+
+    let terminal = wait_for_terminal(&h.state, &job_id, std::time::Duration::from_secs(3))
+        .await
+        .expect("background task did not reach terminal stage within 3s");
+    assert_eq!(terminal.stage, JobStage::Failed);
+    assert_eq!(terminal.message, "panel shutdown");
+}
