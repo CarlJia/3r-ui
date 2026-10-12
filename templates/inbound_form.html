@@ -69,12 +69,15 @@
     .config-echo dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .config-echo dd.break-all { word-break: break-all; }
     .config-echo code { font-size: 12px; }
+    {% include "sidebar_style.html" %}
   </style>
 </head>
 <body>
+  {% let nav_active = "inbound" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
   <header>
     <h1>入站配置</h1>
-    <a href="/admin">返回控制台</a>
   </header>
   <main>
     {% if let Some(err) = error %}
@@ -139,6 +142,7 @@
     </section>
     {% endif %}
   </main>
+  </div>
 
   <script>
     (function () {

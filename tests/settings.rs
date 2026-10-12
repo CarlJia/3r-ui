@@ -214,7 +214,10 @@ async fn second_trigger_while_active_fails_immediately() {
         .values()
         .filter(|j| j.stage == JobStage::Failed && j.message == "已有更新任务进行中")
         .count();
-    assert_eq!(failed_count, 1, "concurrent guard should add one Failed job");
+    assert_eq!(
+        failed_count, 1,
+        "concurrent guard should add one Failed job"
+    );
 }
 
 // ─── Status endpoint ────────────────────────────────────────────────────────
@@ -226,7 +229,10 @@ async fn status_unknown_job_returns_synthesized_failed() {
     let resp = get(&h, "/admin/settings/xray/status?job=nonexistent", &session).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_text(resp).await;
-    assert!(body.contains("\"stage\":\"Failed\""), "should return Failed stage");
+    assert!(
+        body.contains("\"stage\":\"Failed\""),
+        "should return Failed stage"
+    );
     assert!(
         body.contains("任务不存在或已清理"),
         "should have the not-found message"
@@ -255,9 +261,70 @@ async fn status_known_job_returns_its_status() {
         );
     }
 
-    let resp = get(&h, "/admin/settings/xray/status?job=done-job-0001", &session).await;
+    let resp = get(
+        &h,
+        "/admin/settings/xray/status?job=done-job-0001",
+        &session,
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_text(resp).await;
-    assert!(body.contains("\"stage\":\"Succeeded\""), "should return Succeeded stage");
+    assert!(
+        body.contains("\"stage\":\"Succeeded\""),
+        "should return Succeeded stage"
+    );
     assert!(body.contains("v1.8.10"), "should include installed_tag");
+}
+
+// ─── Template rendering assertions ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn settings_sidebar_active_highlight() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/settings", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    // The settings nav link must be active.
+    assert!(
+        html.contains("nav-link active") && html.contains("href=\"/admin/settings\""),
+        "sidebar should have active link for /admin/settings"
+    );
+    // All four original links are still present.
+    assert!(html.contains("href=\"/admin\""), "dashboard link missing");
+    assert!(
+        html.contains("href=\"/admin/inbound\""),
+        "inbound link missing"
+    );
+    assert!(
+        html.contains("href=\"/admin/clients\""),
+        "clients link missing"
+    );
+    assert!(html.contains("href=\"/admin/logs\""), "logs link missing");
+}
+
+#[tokio::test]
+async fn settings_form_has_csrf_field() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/settings", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("type=\"hidden\" name=\"csrf\""),
+        "form must contain hidden CSRF field"
+    );
+}
+
+#[tokio::test]
+async fn version_input_has_pattern_attribute() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/settings", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(
+        html.contains(r#"pattern="^v?[0-9]+(\.[0-9]+){1,2}(-[\w.-]+)?$""#),
+        "version input must have the specified pattern attribute"
+    );
 }

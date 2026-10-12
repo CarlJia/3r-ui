@@ -267,7 +267,11 @@ async fn install_version_downloads_latest_into_staging() {
         .await
         .expect("install_version should succeed");
 
-    assert!(xray_path.is_file(), "xray should exist at {}", xray_path.display());
+    assert!(
+        xray_path.is_file(),
+        "xray should exist at {}",
+        xray_path.display()
+    );
     assert_eq!(&tag, "v1.8.5");
 
     // Staging directory should exist (not cleaned up — caller is responsible).
@@ -326,7 +330,10 @@ async fn install_version_explicit_tag_only_hits_tag_route() {
         .into_iter()
         .filter(|r| r.url.path().contains("latest"))
         .count();
-    assert_eq!(latest_hits, 0, "/releases/latest should not have been called");
+    assert_eq!(
+        latest_hits, 0,
+        "/releases/latest should not have been called"
+    );
 }
 
 #[tokio::test]

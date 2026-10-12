@@ -70,14 +70,15 @@ fn new_job_id() -> String {
 /// `GET /admin/settings` — renders the settings page.
 pub async fn settings_page(
     State(state): State<AppState>,
-    Extension(_admin): Extension<CurrentAdmin>,
+    Extension(CurrentAdmin(admin)): Extension<CurrentAdmin>,
     jar: CookieJar,
 ) -> Response {
-    let xray_bin = state.config.data_dir.join("xray").join(if cfg!(windows) {
-        "xray.exe"
-    } else {
-        "xray"
-    });
+    let xray_bin =
+        state
+            .config
+            .data_dir
+            .join("xray")
+            .join(if cfg!(windows) { "xray.exe" } else { "xray" });
     let download_base = state.config.xray_download_base.clone();
     let xray_log = state.config.data_dir.join("xray.log");
     let data_dir = state.config.data_dir.clone();
@@ -109,10 +110,10 @@ pub async fn settings_page(
     .unwrap_or_else(|_| "未安装".to_string());
 
     // Collect job history sorted by started_at DESC (most recent first).
-    let jobs: Vec<JobStatus> = {
+    let jobs: Vec<JobRowView> = {
         let guard = state.update_jobs.lock().await;
-        let mut jobs: Vec<_> = guard.values().cloned().collect();
-        jobs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        let mut jobs: Vec<_> = guard.values().map(JobRowView::from_job).collect();
+        jobs.sort_by_key(|b| std::cmp::Reverse(b.started_at));
         jobs
     };
 
@@ -120,12 +121,14 @@ pub async fn settings_page(
 
     let html = SettingsTemplate {
         csrf,
+        username: admin.username.clone(),
         xray_bin: xray_bin.display().to_string(),
         download_base,
         xray_log: xray_log.display().to_string(),
         data_dir: data_dir.display().to_string(),
-        version_output,
+        xray_version: version_output,
         jobs,
+        form_action: "/admin/settings/xray/update".to_string(),
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -133,17 +136,76 @@ pub async fn settings_page(
     render_page(jar, StatusCode::OK, html)
 }
 
+/// Format a unix timestamp as an ISO datetime string in UTC.
+fn format_unix_time(ts: i64) -> String {
+    const FMT: &[time::format_description::BorrowedFormatItem<'_>] =
+        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+    time::OffsetDateTime::from_unix_timestamp(ts)
+        .ok()
+        .and_then(|t| t.format(&FMT).ok())
+        .unwrap_or_else(|| ts.to_string())
+}
+
 #[derive(Template)]
 #[template(path = "settings.html", escape = "html")]
-#[allow(dead_code)]
 struct SettingsTemplate {
     csrf: String,
+    username: String,
     xray_bin: String,
     download_base: String,
     xray_log: String,
     data_dir: String,
-    version_output: String,
-    jobs: Vec<JobStatus>,
+    xray_version: String,
+    jobs: Vec<JobRowView>,
+    form_action: String,
+}
+
+/// A job row prepared for template rendering, with Chinese stage label.
+#[derive(Clone, Serialize)]
+pub struct JobRowView {
+    pub id: String,
+    pub stage: JobStage,
+    pub stage_label: String,
+    pub stage_key: String,
+    pub message: String,
+    pub started_at: i64,
+    pub started_at_iso: String,
+    pub is_active: bool,
+}
+
+impl JobRowView {
+    pub fn from_job(job: &JobStatus) -> Self {
+        let stage_key = match job.stage {
+            JobStage::Queued => "queued",
+            JobStage::Downloading => "downloading",
+            JobStage::Downloaded => "downloaded",
+            JobStage::Restarting => "restarting",
+            JobStage::Succeeded => "succeeded",
+            JobStage::Failed => "failed",
+        };
+        Self {
+            id: job.id.clone(),
+            stage: job.stage.clone(),
+            stage_label: stage_label(&job.stage),
+            stage_key: stage_key.to_string(),
+            message: job.message.clone(),
+            started_at: job.started_at,
+            started_at_iso: format_unix_time(job.started_at),
+            is_active: is_active(&job.stage),
+        }
+    }
+}
+
+/// Translate a JobStage to a Chinese human-readable label.
+pub fn stage_label(stage: &JobStage) -> String {
+    match stage {
+        JobStage::Queued => "排队中".to_string(),
+        JobStage::Downloading => "下载中".to_string(),
+        JobStage::Downloaded => "已下载".to_string(),
+        JobStage::Restarting => "重启中".to_string(),
+        JobStage::Succeeded => "成功".to_string(),
+        JobStage::Failed => "失败".to_string(),
+    }
 }
 
 /// Form fields for the update trigger.
@@ -167,7 +229,10 @@ pub async fn trigger_update(
     }
 
     let version = form.version.map(|v| v.trim().to_string());
-    let version_opt = version.as_ref().filter(|v| !v.is_empty()).map(|v| v.as_str());
+    let version_opt = version
+        .as_ref()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.as_str());
 
     // Concurrent guard: reject if any active job exists.
     {
@@ -205,7 +270,11 @@ fn trim_and_insert(
 ) {
     if guard.len() >= 10 {
         // Remove the oldest entry (lowest started_at).
-        if let Some(oldest) = guard.values().min_by_key(|j| j.started_at).map(|j| j.id.clone()) {
+        if let Some(oldest) = guard
+            .values()
+            .min_by_key(|j| j.started_at)
+            .map(|j| j.id.clone())
+        {
             guard.remove(&oldest);
         }
     }
@@ -234,7 +303,10 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
     }
 
     // Check shutdown before downloading.
-    if state.shutdown_initiated.load(std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .shutdown_initiated
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
         push_failed(&state, &job_id, "panel shutdown".to_string()).await;
         return;
     }
@@ -253,7 +325,10 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
     };
 
     // Check shutdown before rename.
-    if state.shutdown_initiated.load(std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .shutdown_initiated
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
         push_failed(&state, &job_id, "panel shutdown".to_string()).await;
         return;
     }
@@ -269,11 +344,12 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
     }
 
     // Replace binary.
-    let canonical = state
-        .config
-        .data_dir
-        .join("xray")
-        .join(if cfg!(windows) { "xray.exe" } else { "xray" });
+    let canonical =
+        state
+            .config
+            .data_dir
+            .join("xray")
+            .join(if cfg!(windows) { "xray.exe" } else { "xray" });
 
     // Transition to Restarting.
     {
@@ -289,10 +365,11 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
         return;
     }
 
-    if let Err(_) = state
+    if state
         .supervisor_tx
         .send(crate::xray::SupervisorCommand::RestartNow)
         .await
+        .is_err()
     {
         push_failed(&state, &job_id, "supervisor gone".to_string()).await;
         return;
@@ -325,7 +402,11 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
             }
         }
         // Cleanup downloaded zip.
-        let suffix = if cfg!(windows) { "windows-64" } else { "linux-64" };
+        let suffix = if cfg!(windows) {
+            "windows-64"
+        } else {
+            "linux-64"
+        };
         let zip_name = format!("Xray-{suffix}.zip");
         let zip_path = data_dir.join("downloads").join(&zip_name);
         let _ = std::fs::remove_file(&zip_path);

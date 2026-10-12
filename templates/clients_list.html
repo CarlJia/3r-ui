@@ -74,12 +74,17 @@
     .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
     .row-actions form { margin: 0; display: inline; }
     .muted { opacity: .6; font-size: 12px; }
+    .usage-detail { display: block; margin-top: 4px; white-space: nowrap; }
+    .table-scroll { overflow-x: auto; }
+    {% include "sidebar_style.html" %}
   </style>
 </head>
 <body>
+  {% let nav_active = "clients" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
   <header>
     <h1>用户管理</h1>
-    <a href="/admin">返回控制台</a>
   </header>
   <main>
     {% if !has_inbound %}
@@ -101,11 +106,13 @@
       {% if clients.is_empty() %}
       <p class="empty">还没有用户。点击右上角「添加用户」创建第一个。</p>
       {% else %}
+      <div class="table-scroll">
       <table>
         <thead>
           <tr>
             <th>名称</th>
             <th>UUID</th>
+            <th>已使用</th>
             <th>配额</th>
             <th>过期</th>
             <th>状态</th>
@@ -115,20 +122,21 @@
         <tbody>
           {% for c in clients %}
           <tr>
-            <td>{% if c.name.is_empty() %}<span class="muted">未命名</span>{% else %}{{ c.name }}{% endif %}</td>
-            <td><span class="uuid">{{ c.uuid[..8] }}…</span></td>
-            <td>{% if c.quota_gb > 0 %}{{ c.quota_gb }} GB{% else %}<span class="muted">不限</span>{% endif %}</td>
-            <td>{% match c.expiry_date %}{% when Some with (d) %}{{ d }}{% when None %}<span class="muted">永不过期</span>{% endmatch %}</td>
+            <td>{% if c.base.name.is_empty() %}<span class="muted">未命名</span>{% else %}{{ c.base.name }}{% endif %}</td>
+            <td><span class="uuid">{{ c.base.uuid[..8] }}…</span></td>
+            <td><strong>{{ c.used }}</strong><span class="muted usage-detail">上行 {{ c.uplink }} / 下行 {{ c.downlink }}</span></td>
+            <td>{% if c.base.quota_gb > 0 %}{{ c.base.quota_gb }} GB{% else %}<span class="muted">不限</span>{% endif %}</td>
+            <td>{% match c.base.expiry_date %}{% when Some with (d) %}{{ d }}{% when None %}<span class="muted">永不过期</span>{% endmatch %}</td>
             <td>
-              <span class="status {% if c.active %}status-active{% else %}status-disabled{% endif %}">
-                {% if c.active %}active{% else %}disabled{% endif %}
+              <span class="status {% if c.base.active %}status-active{% else %}status-disabled{% endif %}">
+                {% if c.base.active %}active{% else %}disabled{% endif %}
               </span>
             </td>
             <td>
               <div class="row-actions">
-                <a class="btn btn-secondary" href="/admin/clients/{{ c.id }}">详情</a>
-                <a class="btn btn-secondary" href="/admin/clients/{{ c.id }}/edit">编辑</a>
-                <form method="post" action="/admin/clients/{{ c.id }}/delete">
+                <a class="btn btn-secondary" href="/admin/clients/{{ c.base.id }}">详情</a>
+                <a class="btn btn-secondary" href="/admin/clients/{{ c.base.id }}/edit">编辑</a>
+                <form method="post" action="/admin/clients/{{ c.base.id }}/delete">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button class="btn btn-danger" type="submit">删除</button>
                 </form>
@@ -138,8 +146,10 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
       {% endif %}
     </section>
   </main>
+  </div>
 </body>
 </html>

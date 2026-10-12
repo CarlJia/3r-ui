@@ -14,9 +14,9 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use tokio::sync::{mpsc, Mutex};
 
+use crate::xray::Installer;
 pub use config::AppConfig;
 pub use error::{AppError, AppResult};
-use crate::xray::Installer;
 
 /// Handle to everything a running panel owns. Returned by [`start_services`]
 /// so tests can drive the lifecycle without going through signal handling.
@@ -36,7 +36,8 @@ impl Services {
     /// access-log receiver, and the retention pruner, then wait.
     pub async fn shutdown(self) {
         // Signal background update tasks to abort without consuming supervisor.
-        self.shutdown_initiated.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.shutdown_initiated
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;

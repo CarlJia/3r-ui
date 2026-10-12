@@ -55,9 +55,13 @@
       background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
       border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
     }
+    {% include "sidebar_style.html" %}
   </style>
 </head>
 <body>
+  {% let nav_active = "clients" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
   <header>
     <h1>{% match client %}{% when Some with (_) %}编辑用户{% when None %}添加用户{% endmatch %}</h1>
     <a href="/admin/clients">返回列表</a>
@@ -99,5 +103,6 @@
       </form>
     </section>
   </main>
+  </div>
 </body>
 </html>

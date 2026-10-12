@@ -167,6 +167,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_second_snapshots_use_the_last_record_for_quota() {
+        let (_dir, pool) = pool().await;
+        insert_client(&pool, 1, 10 * 1024).await;
+        for uplink in [4 * 1024, 12 * 1024] {
+            sqlx::query(
+                "INSERT INTO traffic_snapshots (client_id, uplink, downlink, recorded_at) \
+                 VALUES (1, ?, 0, 100)",
+            )
+            .bind(uplink)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(latest_total(&pool, 1).await.unwrap(), 12 * 1024);
+        assert_eq!(check(&pool).await.unwrap(), vec![1]);
+    }
+
+    #[tokio::test]
     async fn latest_total_returns_zero_without_snapshots() {
         let (_dir, pool) = pool().await;
         insert_client(&pool, 1, 100).await;

@@ -82,15 +82,18 @@ impl Snapshot {
     /// Seed the in-memory last-xray values from the most recent snapshot row
     /// per client. Called once at panel startup.
     pub async fn seed_from_db(&mut self, pool: &SqlitePool) -> AppResult<()> {
-        let rows: Vec<(i64, i64, i64, i64, i64)> = sqlx::query_as(
-            "SELECT client_id, uplink, downlink, xray_uplink, xray_downlink \
-             FROM traffic_snapshots \
-             WHERE recorded_at IN (SELECT MAX(recorded_at) FROM traffic_snapshots GROUP BY client_id)",
+        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT client_id, xray_uplink, xray_downlink FROM ( \
+               SELECT client_id, xray_uplink, xray_downlink, \
+                      ROW_NUMBER() OVER (PARTITION BY client_id \
+                                         ORDER BY recorded_at DESC, rowid DESC) AS rank \
+               FROM traffic_snapshots \
+             ) WHERE rank = 1",
         )
         .fetch_all(pool)
         .await
         .map_err(AppError::Database)?;
-        for (client_id, _uplink, _downlink, xray_uplink, xray_downlink) in rows {
+        for (client_id, xray_uplink, xray_downlink) in rows {
             self.last_xray
                 .insert(client_id, (xray_uplink, xray_downlink));
         }
@@ -181,7 +184,7 @@ pub async fn poll_once(
 
         let baseline: (i64, i64) = sqlx::query_as(
             "SELECT uplink, downlink FROM traffic_snapshots \
-             WHERE client_id = ? ORDER BY recorded_at DESC LIMIT 1",
+             WHERE client_id = ? ORDER BY recorded_at DESC, rowid DESC LIMIT 1",
         )
         .bind(client_id)
         .fetch_optional(&pool)
@@ -227,7 +230,7 @@ pub async fn connect() -> AppResult<StatsServiceClient<Channel>> {
 pub async fn latest_total(pool: &SqlitePool, client_id: i64) -> AppResult<i64> {
     let row: Option<(i64, i64)> = sqlx::query_as(
         "SELECT uplink, downlink FROM traffic_snapshots \
-         WHERE client_id = ? ORDER BY recorded_at DESC LIMIT 1",
+         WHERE client_id = ? ORDER BY recorded_at DESC, rowid DESC LIMIT 1",
     )
     .bind(client_id)
     .fetch_optional(pool)
@@ -340,5 +343,55 @@ mod tests {
         let out = fold_query_response(&resp, &map);
         assert_eq!(out.get(&7), Some(&(100, 200)));
         assert_eq!(out.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_seed_uses_latest_row_per_client_when_timestamps_tie() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO inbounds (id, listen_port, dest, sni, private_key, public_key, short_id) \
+             VALUES (1, 8443, 'a.example', 'a.example', 'priv', 'pub', 'ab')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for id in [1, 2] {
+            sqlx::query(
+                "INSERT INTO clients (id, inbound_id, uuid, quota_bytes) VALUES (?, 1, ?, 0)",
+            )
+            .bind(id)
+            .bind(format!("uuid-{id}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (id, xray_up, xray_down, at) in [
+            (1, 10, 20, 100),
+            (2, 3, 4, 90),
+            (1, 30, 40, 100),
+            (2, 5, 6, 100),
+        ] {
+            sqlx::query(
+                "INSERT INTO traffic_snapshots \
+                 (client_id, uplink, downlink, xray_uplink, xray_downlink, recorded_at) \
+                 VALUES (?, 0, 0, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(xray_up)
+            .bind(xray_down)
+            .bind(at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let mut snapshot = Snapshot::new();
+        snapshot.seed_from_db(&pool).await.unwrap();
+        assert_eq!(snapshot.last(1), Some((30, 40)));
+        assert_eq!(snapshot.last(2), Some((5, 6)));
     }
 }

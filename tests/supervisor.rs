@@ -328,8 +328,7 @@ async fn restart_now_kills_child_and_respawns() {
     let (xray_bin, config_path) = setup(&tmp);
     write_stub_alive(&xray_bin);
 
-    let supervisor =
-        XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -373,8 +372,7 @@ async fn restart_now_then_stop_exits_cleanly() {
     let (xray_bin, config_path) = setup(&tmp);
     write_stub_alive(&xray_bin);
 
-    let supervisor =
-        XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
@@ -408,8 +406,7 @@ async fn restart_now_keeps_loop_alive_indefinitely() {
     let (xray_bin, config_path) = setup(&tmp);
     write_stub_alive(&xray_bin);
 
-    let supervisor =
-        XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
+    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
