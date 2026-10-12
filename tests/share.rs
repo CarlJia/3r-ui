@@ -46,6 +46,12 @@ async fn boot() -> Harness {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
+        update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        installer: std::sync::Arc::new(
+            three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
+                .expect("installer must be constructible"),
+        ),
+        shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
         app: web::router(state),
@@ -209,6 +215,12 @@ async fn detail_page_warns_when_public_host_is_unset() {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
+        update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        installer: std::sync::Arc::new(
+            three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
+                .expect("installer must be constructible"),
+        ),
+        shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let app = web::router(state);
     let h = Harness {

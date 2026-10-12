@@ -1,0 +1,263 @@
+//! Integration tests for U3: settings page, xray update trigger, and status endpoint.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use std::sync::Arc;
+use tempfile::tempdir;
+use three_r_ui::config::AppConfig;
+use three_r_ui::crypto::password;
+use three_r_ui::web::settings::{JobStage, JobStatus};
+use three_r_ui::web::{self, AppState};
+use tower::ServiceExt;
+
+const ADMIN_PW: &str = "s3cret-admin-pw";
+
+struct Harness {
+    #[allow(dead_code)]
+    app: axum::Router,
+    #[allow(dead_code)]
+    state: AppState,
+    _dir: tempfile::TempDir,
+    #[allow(dead_code)]
+    pool: sqlx::SqlitePool,
+    #[allow(dead_code)]
+    data_dir: std::path::PathBuf,
+}
+
+async fn boot() -> Harness {
+    let dir = tempdir().unwrap();
+    let mut config = AppConfig::from_env().unwrap();
+    config.data_dir = dir.path().to_path_buf();
+    // Use a guaranteed-fast-fail URL so background run_update tasks exit
+    // promptly with a Failed state (the test process does not need to
+    // reach the real GitHub; download correctness is covered by
+    // tests/installer.rs).
+    config.xray_download_base = "http://127.0.0.1:1".to_string();
+
+    let pool = three_r_ui::init_storage(&config).await.unwrap();
+    sqlx::query(
+        "INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, unixepoch())",
+    )
+    .bind("admin")
+    .bind(password::hash(ADMIN_PW).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The supervisor channel drains so RestartNow sends never block the handler.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+    let state = AppState {
+        config: config.clone(),
+        pool: pool.clone(),
+        supervisor_tx: tx,
+        update_jobs: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        installer: Arc::new(
+            three_r_ui::xray::Installer::new(config.xray_download_base.clone())
+                .expect("installer must be constructible"),
+        ),
+        shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+
+    Harness {
+        app: web::router(state.clone()),
+        state,
+        _dir: dir,
+        pool,
+        data_dir: config.data_dir.clone(),
+    }
+}
+
+fn set_cookie(resp: &axum::response::Response, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    resp.headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|v| {
+            let after = v.strip_prefix(&prefix)?;
+            Some(after.split(';').next().unwrap_or("").to_string())
+        })
+}
+
+async fn login(h: &Harness) -> (String, String) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!("username=admin&password={ADMIN_PW}")))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    (
+        set_cookie(&resp, "session").expect("session"),
+        set_cookie(&resp, "csrf").expect("csrf"),
+    )
+}
+
+async fn get(h: &Harness, uri: &str, session: &str) -> axum::response::Response {
+    let req = Request::builder()
+        .uri(uri)
+        .header("cookie", format!("session={session}"))
+        .body(Body::empty())
+        .unwrap();
+    h.app.clone().oneshot(req).await.unwrap()
+}
+
+async fn post(
+    h: &Harness,
+    uri: &str,
+    session: &str,
+    csrf: &str,
+    body: &str,
+) -> axum::response::Response {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("x-csrf-token", csrf)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    h.app.clone().oneshot(req).await.unwrap()
+}
+
+async fn body_text(resp: axum::response::Response) -> String {
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn settings_page_requires_session() {
+    let h = boot().await;
+    let req = Request::builder()
+        .uri("/admin/settings")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+}
+
+// ─── GET /admin/settings ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn settings_page_renders_with_session() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/settings", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(html.contains("系统设置"), "should contain heading");
+}
+
+// ─── CSRF ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn trigger_update_requires_csrf() {
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+    // POST with valid session + real csrf cookie, but the form submits a
+    // different csrf value. Middleware must reject with 403.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/xray/update")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from("csrf=definitely-not-the-real-token"))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+// ─── Concurrent guard ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn second_trigger_while_active_fails_immediately() {
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+
+    // Insert a fake active job directly into update_jobs.
+    {
+        let mut guard = h.state.update_jobs.lock().await;
+        guard.insert(
+            "active-job-0000".to_string(),
+            JobStatus {
+                id: "active-job-0000".to_string(),
+                stage: JobStage::Downloading,
+                message: "下载中".to_string(),
+                started_at: 0,
+                finished_at: None,
+                installed_tag: None,
+                error_message: None,
+            },
+        );
+    }
+
+    // Triggering a new update should immediately return a Failed job.
+    let resp = post(
+        &h,
+        "/admin/settings/xray/update",
+        &session,
+        &csrf,
+        &("csrf=".to_string() + &csrf),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    // Verify a new Failed job was added.
+    let guard = h.state.update_jobs.lock().await;
+    let failed_count = guard
+        .values()
+        .filter(|j| j.stage == JobStage::Failed && j.message == "已有更新任务进行中")
+        .count();
+    assert_eq!(failed_count, 1, "concurrent guard should add one Failed job");
+}
+
+// ─── Status endpoint ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn status_unknown_job_returns_synthesized_failed() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/settings/xray/status?job=nonexistent", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_text(resp).await;
+    assert!(body.contains("\"stage\":\"Failed\""), "should return Failed stage");
+    assert!(
+        body.contains("任务不存在或已清理"),
+        "should have the not-found message"
+    );
+}
+
+#[tokio::test]
+async fn status_known_job_returns_its_status() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+
+    // Insert a Succeeded job.
+    {
+        let mut guard = h.state.update_jobs.lock().await;
+        guard.insert(
+            "done-job-0001".to_string(),
+            JobStatus {
+                id: "done-job-0001".to_string(),
+                stage: JobStage::Succeeded,
+                message: "已替换并已重启".to_string(),
+                started_at: 1000,
+                finished_at: Some(1010),
+                installed_tag: Some("v1.8.10".to_string()),
+                error_message: None,
+            },
+        );
+    }
+
+    let resp = get(&h, "/admin/settings/xray/status?job=done-job-0001", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_text(resp).await;
+    assert!(body.contains("\"stage\":\"Succeeded\""), "should return Succeeded stage");
+    assert!(body.contains("v1.8.10"), "should include installed_tag");
+}

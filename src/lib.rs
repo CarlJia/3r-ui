@@ -7,19 +7,23 @@ pub mod share;
 pub mod web;
 pub mod xray;
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use sqlx::SqlitePool;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 pub use config::AppConfig;
 pub use error::{AppError, AppResult};
+use crate::xray::Installer;
 
 /// Handle to everything a running panel owns. Returned by [`start_services`]
 /// so tests can drive the lifecycle without going through signal handling.
 pub struct Services {
     pub pool: SqlitePool,
     pub supervisor_tx: mpsc::Sender<xray::SupervisorCommand>,
+    shutdown_initiated: Arc<std::sync::atomic::AtomicBool>,
     supervisor_handle: tokio::task::JoinHandle<()>,
     http_handle: tokio::task::JoinHandle<()>,
     stats_handle: tokio::task::JoinHandle<()>,
@@ -31,6 +35,8 @@ impl Services {
     /// Stop the HTTP server, the xray supervisor, the stats poll loop, the
     /// access-log receiver, and the retention pruner, then wait.
     pub async fn shutdown(self) {
+        // Signal background update tasks to abort without consuming supervisor.
+        self.shutdown_initiated.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;
@@ -81,7 +87,15 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         config: config.clone(),
         pool: pool.clone(),
         supervisor_tx: supervisor_tx.clone(),
+        update_jobs: Arc::new(Mutex::new(HashMap::new())),
+        installer: Arc::new(
+            Installer::new(config.xray_download_base.clone())
+                .expect("installer must be constructible"),
+        ),
+        shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
+    // Clone the Arc handle for Services::shutdown before app_state is moved into the async block.
+    let shutdown_initiated = app_state.shutdown_initiated.clone();
     let http_handle = tokio::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(bind_addr).await {
             Ok(l) => l,
@@ -133,6 +147,7 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     Ok(Services {
         pool,
         supervisor_tx,
+        shutdown_initiated,
         supervisor_handle,
         http_handle,
         stats_handle,

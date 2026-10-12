@@ -5,13 +5,19 @@ pub mod clients;
 pub mod inbound;
 pub mod logs;
 pub mod middleware;
+pub mod settings;
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::routing::{get, post};
 use axum::Router;
+use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 
 use crate::config::AppConfig;
-use crate::xray::SupervisorCommand;
+use crate::web::settings::JobStatus;
+use crate::xray::{Installer, SupervisorCommand};
 
 /// How long a login session stays valid.
 pub const SESSION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
@@ -24,6 +30,12 @@ pub struct AppState {
     pub config: AppConfig,
     pub pool: sqlx::SqlitePool,
     pub supervisor_tx: tokio::sync::mpsc::Sender<SupervisorCommand>,
+    /// In-flight and recent xray-update job statuses.
+    pub update_jobs: Arc<Mutex<HashMap<String, JobStatus>>>,
+    pub installer: Arc<Installer>,
+    /// Set to true before sending `Stop` to the supervisor; background update
+    /// tasks check this before taking actions that require a live supervisor.
+    pub shutdown_initiated: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Build the full router. Routes under `/admin` require a valid session; every
@@ -49,6 +61,9 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/clients/:id/delete", post(clients::delete))
         .route("/admin/clients/:id/qr.png", get(clients::qr_png))
         .route("/admin/logs", get(logs::list))
+        .route("/admin/settings", get(settings::settings_page))
+        .route("/admin/settings/xray/update", post(settings::trigger_update))
+        .route("/admin/settings/xray/status", get(settings::update_status))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_session,

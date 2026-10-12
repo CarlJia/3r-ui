@@ -42,9 +42,15 @@ async fn boot() -> Harness {
 
     let data_dir = config.data_dir.clone();
     let state = AppState {
-        config,
+        config: config.clone(),
         pool: pool.clone(),
         supervisor_tx: tx,
+        update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        installer: std::sync::Arc::new(
+            three_r_ui::xray::Installer::new(config.xray_download_base.clone())
+                .expect("installer must be constructible"),
+        ),
+        shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
         app: web::router(state),
@@ -157,6 +163,149 @@ async fn empty_list_shows_an_empty_state() {
 }
 
 #[tokio::test]
+async fn clients_list_shows_zero_usage_without_snapshots() {
+    let h = boot_with_inbound().await;
+    let (session, csrf) = login(&h).await;
+    assert_eq!(
+        post(
+            &h,
+            "/admin/clients",
+            &session,
+            &csrf,
+            "name=alice&quota_gb=10"
+        )
+        .await
+        .status(),
+        StatusCode::SEE_OTHER
+    );
+
+    let html = body_text(get(&h, "/admin/clients", &session).await).await;
+    assert!(html.contains("已使用"));
+    assert!(html.contains("上行 0 B / 下行 0 B"));
+}
+
+#[tokio::test]
+async fn clients_list_uses_latest_cumulative_snapshot_for_each_client() {
+    let h = boot_with_inbound().await;
+    let (session, csrf) = login(&h).await;
+    for name in ["alice", "bob"] {
+        assert_eq!(
+            post(
+                &h,
+                "/admin/clients",
+                &session,
+                &csrf,
+                &format!("name={name}&quota_gb=10")
+            )
+            .await
+            .status(),
+            StatusCode::SEE_OTHER
+        );
+    }
+    let ids: Vec<(i64,)> = sqlx::query_as("SELECT id FROM clients ORDER BY id")
+        .fetch_all(&h.pool)
+        .await
+        .unwrap();
+    let alice = ids[0].0;
+    let bob = ids[1].0;
+    for (id, up, down, at) in [
+        (alice, 50, 20, 10),
+        (alice, 7, 8, 20),
+        (alice, 1024 * 1024 * 1024, 512 * 1024 * 1024, 20),
+        (alice, 1, 1, 5),
+        (bob, 2048, 0, 20),
+    ] {
+        sqlx::query(
+            "INSERT INTO traffic_snapshots (client_id, uplink, downlink, recorded_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(up)
+        .bind(down)
+        .bind(at)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE clients SET status = 'disabled' WHERE id = ?")
+        .bind(bob)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+
+    let html = body_text(get(&h, "/admin/clients", &session).await).await;
+    assert!(
+        html.contains("1.50 GiB"),
+        "alice total should be the latest cumulative total"
+    );
+    assert!(html.contains("上行 1.00 GiB / 下行 512.00 MiB"));
+    assert!(
+        html.contains("上行 2.00 KiB / 下行 0 B"),
+        "disabled bob remains visible"
+    );
+    assert!(
+        !html.contains("上行 50 B"),
+        "historical row must not be summed or shown"
+    );
+}
+
+#[tokio::test]
+async fn admin_pages_show_left_navigation() {
+    let h = boot_with_inbound().await;
+    let (session, csrf) = login(&h).await;
+    for uri in [
+        "/admin",
+        "/admin/inbound",
+        "/admin/clients",
+        "/admin/clients/new",
+    ] {
+        let resp = get(&h, uri, &session).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        let html = body_text(resp).await;
+        assert!(
+            html.contains("class=\"sidebar\""),
+            "missing sidebar at {uri}"
+        );
+        for path in [
+            "/admin",
+            "/admin/inbound",
+            "/admin/clients",
+            "/admin/clients/new",
+        ] {
+            assert!(
+                html.contains(&format!("href=\"{path}\"")),
+                "missing {path} at {uri}"
+            );
+        }
+    }
+    assert_eq!(
+        post(
+            &h,
+            "/admin/clients",
+            &session,
+            &csrf,
+            "name=alice&quota_gb=0"
+        )
+        .await
+        .status(),
+        StatusCode::SEE_OTHER
+    );
+    let id: i64 = sqlx::query_scalar("SELECT id FROM clients")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    for uri in [
+        format!("/admin/clients/{id}"),
+        format!("/admin/clients/{id}/edit"),
+    ] {
+        let html = body_text(get(&h, &uri, &session).await).await;
+        assert!(
+            html.contains("class=\"sidebar\""),
+            "missing sidebar at {uri}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn list_without_inbound_hides_the_add_button() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
@@ -164,7 +313,11 @@ async fn list_without_inbound_hides_the_add_button() {
     assert_eq!(resp.status(), StatusCode::OK);
     let html = body_text(resp).await;
     assert!(html.contains("尚未创建入站"));
-    assert!(!html.contains(r#"href="/admin/clients/new""#));
+    assert!(
+        html.contains(r#"href="/admin/clients/new""#),
+        "the sidebar stays navigable"
+    );
+    assert!(!html.contains(r#"class="btn btn-primary" href="/admin/clients/new""#));
 }
 
 #[tokio::test]
