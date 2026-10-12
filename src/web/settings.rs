@@ -247,8 +247,7 @@ pub async fn trigger_update(
             return Redirect::to("/admin/settings").into_response();
         }
         let job_id = new_job_id();
-        let initial =
-            JobStatus::new(job_id.clone(), JobStage::Queued, "排队中".to_string());
+        let initial = JobStatus::new(job_id.clone(), JobStage::Queued, "排队中".to_string());
         trim_and_insert(&mut guard, job_id.clone(), initial);
         job_id
     };
@@ -364,7 +363,11 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
         }
         if let Ok(suffix) = crate::xray::installer::asset_suffix() {
             let _ = std::fs::remove_file(
-                state.config.data_dir.join("downloads").join(format!("Xray-{suffix}.zip")),
+                state
+                    .config
+                    .data_dir
+                    .join("downloads")
+                    .join(format!("Xray-{suffix}.zip")),
             );
         }
         push_failed(&state, &job_id, format!("rename failed: {}", e)).await;

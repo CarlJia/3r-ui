@@ -58,9 +58,7 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
 
     // Single shared Installer instance for both bootstrap and runtime updates,
     // so its reqwest::Client connection pool is not duplicated.
-    let installer = std::sync::Arc::new(xray::Installer::new(
-        config.xray_download_base.clone(),
-    )?);
+    let installer = std::sync::Arc::new(xray::Installer::new(config.xray_download_base.clone())?);
     let xray_bin = ensure_xray_binary(&config, installer.clone()).await;
     let config_path = config.data_dir.join("xray").join("config.json");
 

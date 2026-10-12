@@ -380,7 +380,11 @@ async fn run_update_advances_to_failed_when_installer_unreachable() {
         let guard = h.state.update_jobs.lock().await;
         guard
             .values()
-            .find(|j| j.stage == JobStage::Queued || j.stage == JobStage::Downloading || j.stage == JobStage::Failed)
+            .find(|j| {
+                j.stage == JobStage::Queued
+                    || j.stage == JobStage::Downloading
+                    || j.stage == JobStage::Failed
+            })
             .map(|j| j.id.clone())
             .expect("expected a freshly inserted job")
     };
@@ -389,15 +393,23 @@ async fn run_update_advances_to_failed_when_installer_unreachable() {
         .await
         .expect("background task did not reach terminal stage within 5s");
     assert_eq!(terminal.stage, JobStage::Failed);
-    assert!(terminal.finished_at.is_some(), "finished_at must be set on Failed");
-    assert!(terminal.error_message.is_some(), "error_message must be set on Failed");
+    assert!(
+        terminal.finished_at.is_some(),
+        "finished_at must be set on Failed"
+    );
+    assert!(
+        terminal.error_message.is_some(),
+        "error_message must be set on Failed"
+    );
 }
 
 #[tokio::test]
 async fn run_update_pushes_failed_when_shutdown_initiated_before_download() {
     // Pre-set the shutdown flag so the run_update's pre-download check fires.
     let h = boot().await;
-    h.state.shutdown_initiated.store(true, std::sync::atomic::Ordering::SeqCst);
+    h.state
+        .shutdown_initiated
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let (session, csrf) = login(&h).await;
 
     let req = Request::builder()
