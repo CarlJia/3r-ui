@@ -96,11 +96,17 @@ echo "[dev] starting 3r-ui on 127.0.0.1:$PORT"
 # Build env explicitly so an unset PUBLIC_HOST does not leak into the
 # binary's environment as an empty var (and so a missing conditional does
 # not become a stray command argument).
+#
+# XRAY_DOWNLOAD_BASE defaults to an unreachable address so a local run never
+# pulls a multi-MB xray-core release by surprise (startup continues without a
+# binary — see `ensure_xray_binary` in src/lib.rs). Export your own value to
+# exercise the real update path from /admin/settings, e.g.:
+#   XRAY_DOWNLOAD_BASE=https://github.com make dev
 env_args=(
     "DATA_DIR=$DATA_DIR"
     "BIND_ADDR=127.0.0.1:$PORT"
     "STATS_INTERVAL_SECS=10"
-    "XRAY_DOWNLOAD_BASE=http://127.0.0.1:1/dev-invalid"
+    "XRAY_DOWNLOAD_BASE=${XRAY_DOWNLOAD_BASE:-http://127.0.0.1:1/dev-invalid}"
     "RUST_LOG=info"
 )
 if [ -n "$PUBLIC_HOST" ]; then
