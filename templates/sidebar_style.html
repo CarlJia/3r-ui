@@ -10,6 +10,12 @@ body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 1
                      color: #bdcbd6; text-decoration: none; font-size: 13px; }
 .sidebar .nav-link:hover, .sidebar .nav-link:focus-visible { background: #273949; color: #fff; }
 .sidebar .nav-link.active { background: #24516a; color: #fff; font-weight: 600; }
+/* The "新增用户" entry is the always-available shortcut to the create form,
+   so an admin can land on it from any page — including the ones where the
+   list page itself hides its own "添加用户" button (no inbound yet). It sits
+   under "用户列表" as a peer rather than a child so it shares the same hit
+   target on the narrow-screen horizontal scrollbar. */
+.sidebar .nav-add { padding-left: 22px; font-size: 12px; opacity: .85; }
 .content { min-width: 0; }
 @media (max-width: 760px) {
   body { display: block; }
