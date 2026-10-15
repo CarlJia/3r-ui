@@ -101,7 +101,7 @@ echo "[dev] starting 3r-ui on 127.0.0.1:$PORT"
 # pulls a multi-MB xray-core release by surprise (startup continues without a
 # binary — see `ensure_xray_binary` in src/lib.rs). Export your own value to
 # exercise the real update path from /admin/settings, e.g.:
-#   XRAY_DOWNLOAD_BASE=https://github.com make dev
+#   XRAY_DOWNLOAD_BASE=https://api.github.com make dev
 env_args=(
     "DATA_DIR=$DATA_DIR"
     "BIND_ADDR=127.0.0.1:$PORT"
@@ -140,17 +140,28 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-# Wait for the binary to bind (or fail to bind).
-for i in $(seq 1 50); do
+# Wait for the binary to bind (or fail to bind). A cold start downloads
+# xray-core (tens of MB) before the HTTP listener binds, so the budget has to
+# cover a real download rather than just a warm boot; print progress so the
+# first run does not look hung. `SECONDS` is a bash builtin, so the budget is
+# wall-clock rather than a tick count.
+READY_BUDGET_SECS=180
+SECONDS=0
+last_progress=0
+while [ "$SECONDS" -lt "$READY_BUDGET_SECS" ]; do
     if grep -q "3r-ui ready" "$LOG" 2>/dev/null; then break; fi
     if ! kill -0 "$PID" 2>/dev/null; then
         echo "[dev] panel exited before becoming ready; log tail:" >&2
         tail -n 40 "$LOG" >&2
         exit 1
     fi
-    sleep 0.2
+    if [ $((SECONDS - last_progress)) -ge 5 ]; then
+        last_progress=$SECONDS
+        echo "[dev] still starting after ${SECONDS}s (first run may be downloading xray-core)"
+    fi
+    sleep 0.5
 done
-grep -q "3r-ui ready" "$LOG" || { echo "[dev] panel never reported ready" >&2; tail -n 40 "$LOG" >&2; exit 1; }
+grep -q "3r-ui ready" "$LOG" || { echo "[dev] panel not ready after ${READY_BUDGET_SECS}s" >&2; tail -n 40 "$LOG" >&2; exit 1; }
 
 # ---- 5. Report ---------------------------------------------------------
 

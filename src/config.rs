@@ -24,8 +24,10 @@ impl AppConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(30);
+        // GitHub **API** root, not the web host: the installer appends
+        // `/repos/XTLS/Xray-core/releases/...` and parses the release JSON.
         let xray_download_base = std::env::var("XRAY_DOWNLOAD_BASE")
-            .unwrap_or_else(|_| "https://github.com".to_string());
+            .unwrap_or_else(|_| "https://api.github.com".to_string());
         let public_host = std::env::var("PUBLIC_HOST").unwrap_or_default();
 
         // Per Assumptions: warn (not block) if binding to non-loopback.

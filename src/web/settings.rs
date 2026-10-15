@@ -337,13 +337,8 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
         }
     }
 
-    // Replace binary.
-    let canonical =
-        state
-            .config
-            .data_dir
-            .join("xray")
-            .join(if cfg!(windows) { "xray.exe" } else { "xray" });
+    // Replace binary (and the assets xray loads from its own directory).
+    let xray_dir = state.config.data_dir.join("xray");
 
     // Transition to Restarting.
     {
@@ -354,7 +349,7 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
         }
     }
 
-    if let Err(e) = std::fs::rename(&staging_xray, &canonical) {
+    if let Err(e) = crate::xray::installer::promote_staged_xray(&staging_xray, &xray_dir) {
         // Promote failed: clean up the staging dir we no longer intend to keep,
         // then report Failed. Without this, repeated failed renames leak
         // extracted xray binaries + the downloaded zip on disk.
@@ -370,7 +365,7 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
                     .join(format!("Xray-{suffix}.zip")),
             );
         }
-        push_failed(&state, &job_id, format!("rename failed: {}", e)).await;
+        push_failed(&state, &job_id, format!("替换 xray 失败: {}", e)).await;
         return;
     }
 

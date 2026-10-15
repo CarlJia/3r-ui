@@ -9,64 +9,95 @@ use three_r_ui::xray::Installer;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const REPO_PATH: &str = "/XTLS/Xray-core/releases/latest";
+// The installer talks to the GitHub **API** (api.github.com); the web host
+// serves HTML at the equivalent path. These literals pin that contract.
+const REPO_PATH: &str = "/repos/XTLS/Xray-core/releases/latest";
 const ASSET_NAME_LINUX_64: &str = "Xray-linux-64.zip";
 
-fn build_minimal_xray_zip(version: &str) -> Vec<u8> {
-    // zip 2.x writes are buffered; we construct the archive by hand in
-    // central-directory + local-header form to avoid pulling in extra deps.
-    // The contents are an empty executable file named "xray" inside a
-    // top-level "xray-core-${version}/" directory.
+/// Build an in-memory release archive.
+///
+/// The entry set mirrors what XTLS/Xray-core publishes: the binary plus the geo
+/// data files xray loads from the binary's directory. Carrying them is the point
+/// — a fixture with only `xray` cannot see a promotion that drops them.
+/// `top_dir` nests every entry under one leading directory, the layout some
+/// mirrors repackage the release with.
+fn build_minimal_xray_zip(top_dir: Option<&str>) -> Vec<u8> {
+    let entries = [
+        ("xray", b"#!/bin/sh\necho xray\n".as_slice()),
+        ("geoip.dat", b"geoip".as_slice()),
+        ("geosite.dat", b"geosite".as_slice()),
+    ];
+    let entries: Vec<(String, &[u8])> = entries
+        .iter()
+        .map(|(name, payload)| {
+            let name = match top_dir {
+                Some(dir) => format!("{dir}/{name}"),
+                None => (*name).to_string(),
+            };
+            (name, *payload)
+        })
+        .collect();
+    build_zip(&entries)
+}
+
+/// Serialise `entries` as a stored (uncompressed) ZIP archive.
+///
+/// zip 2.x writes are buffered; we construct the archive by hand in
+/// central-directory + local-header form to avoid pulling in extra deps.
+fn build_zip(entries: &[(String, &[u8])]) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
-    let payload = b"#!/bin/sh\necho xray\n";
-    let top = format!("xray-core-{version}/");
-    let file_name = format!("{top}xray");
+    let mut central: Vec<u8> = Vec::new();
 
-    // Local file header for `xray`
-    buf.extend_from_slice(b"PK\x03\x04");
-    buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
-    buf.extend_from_slice(&0u16.to_le_bytes()); // flags
-    buf.extend_from_slice(&0u16.to_le_bytes()); // compression (stored)
-    buf.extend_from_slice(&0u16.to_le_bytes()); // mod time
-    buf.extend_from_slice(&0u16.to_le_bytes()); // mod date
-    let crc = crc32(payload);
-    buf.extend_from_slice(&crc.to_le_bytes());
-    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&(file_name.len() as u16).to_le_bytes());
-    buf.extend_from_slice(&0u16.to_le_bytes());
-    buf.extend_from_slice(file_name.as_bytes());
-    buf.extend_from_slice(payload);
+    for (name, payload) in entries {
+        let crc = crc32(payload);
 
-    // Central directory entry for `xray`
+        // Local file header
+        let local_offset = buf.len() as u32;
+        buf.extend_from_slice(b"PK\x03\x04");
+        buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        buf.extend_from_slice(&0u16.to_le_bytes()); // flags
+        buf.extend_from_slice(&0u16.to_le_bytes()); // compression (stored)
+        buf.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        buf.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        buf.extend_from_slice(&crc.to_le_bytes());
+        buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes()); // extra
+        buf.extend_from_slice(name.as_bytes());
+        buf.extend_from_slice(payload);
+
+        // Central directory entry
+        central.extend_from_slice(b"PK\x01\x02");
+        central.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        central.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        central.extend_from_slice(&0u16.to_le_bytes()); // flags
+        central.extend_from_slice(&0u16.to_le_bytes()); // compression
+        central.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        central.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes()); // extra
+        central.extend_from_slice(&0u16.to_le_bytes()); // comment
+        central.extend_from_slice(&0u16.to_le_bytes()); // disk number
+        central.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        central.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        central.extend_from_slice(&local_offset.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+    }
+
     let cd_offset = buf.len() as u32;
-    buf.extend_from_slice(b"PK\x01\x02");
-    buf.extend_from_slice(&20u16.to_le_bytes()); // version made by
-    buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
-    buf.extend_from_slice(&0u16.to_le_bytes()); // flags
-    buf.extend_from_slice(&0u16.to_le_bytes()); // compression
-    buf.extend_from_slice(&0u16.to_le_bytes()); // mod time
-    buf.extend_from_slice(&0u16.to_le_bytes()); // mod date
-    buf.extend_from_slice(&crc.to_le_bytes());
-    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&(file_name.len() as u16).to_le_bytes());
-    buf.extend_from_slice(&0u16.to_le_bytes()); // extra
-    buf.extend_from_slice(&0u16.to_le_bytes()); // comment
-    buf.extend_from_slice(&0u16.to_le_bytes()); // disk number
-    buf.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
-    buf.extend_from_slice(&0u32.to_le_bytes()); // external attrs
-    buf.extend_from_slice(&0u32.to_le_bytes()); // local header offset
-    buf.extend_from_slice(file_name.as_bytes());
-
-    let cd_size = buf.len() as u32 - cd_offset;
+    let cd_size = central.len() as u32;
+    buf.extend_from_slice(&central);
 
     // End of central directory
     buf.extend_from_slice(b"PK\x05\x06");
     buf.extend_from_slice(&0u16.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes());
-    buf.extend_from_slice(&1u16.to_le_bytes()); // entries on this disk
-    buf.extend_from_slice(&1u16.to_le_bytes()); // total entries
+    buf.extend_from_slice(&(entries.len() as u16).to_le_bytes()); // entries on this disk
+    buf.extend_from_slice(&(entries.len() as u16).to_le_bytes()); // total entries
     buf.extend_from_slice(&cd_size.to_le_bytes());
     buf.extend_from_slice(&cd_offset.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes()); // comment length
@@ -112,22 +143,28 @@ async fn stand_up_release_endpoint(archive: Vec<u8>, status: u16) -> MockServer 
     server
 }
 
+/// Asset name the installer should look for on this platform.
+///
+/// These literals are the oracle: they must match the names XTLS/Xray-core
+/// actually publishes (the arm64/arm32 builds carry `-v8a`/`-v7a`). Deriving
+/// them from the implementation would make the test pass even when both sides
+/// are wrong.
 fn current_asset_name() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => ASSET_NAME_LINUX_64,
-        ("linux", "aarch64") => "Xray-linux-arm64.zip",
-        ("linux", "arm") => "Xray-linux-armv7.zip",
+        ("linux", "aarch64") => "Xray-linux-arm64-v8a.zip",
+        ("linux", "arm") => "Xray-linux-arm32-v7a.zip",
         ("macos", "x86_64") => "Xray-macos-64.zip",
-        ("macos", "aarch64") => "Xray-macos-arm64.zip",
+        ("macos", "aarch64") => "Xray-macos-arm64-v8a.zip",
         ("windows", "x86_64") => "Xray-windows-64.zip",
-        ("windows", "aarch64") => "Xray-windows-arm64.zip",
+        ("windows", "aarch64") => "Xray-windows-arm64-v8a.zip",
         _ => panic!("unsupported target triple for test"),
     }
 }
 
 #[tokio::test]
 async fn ensure_xray_downloads_extracts_and_promotes_binary() {
-    let server = stand_up_release_endpoint(build_minimal_xray_zip("v1.8.5"), 200).await;
+    let server = stand_up_release_endpoint(build_minimal_xray_zip(None), 200).await;
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
 
@@ -142,6 +179,19 @@ async fn ensure_xray_downloads_extracts_and_promotes_binary() {
         xray_path.file_name().unwrap(),
         if cfg!(windows) { "xray.exe" } else { "xray" }
     );
+
+    // xray resolves geosite.dat/geoip.dat from the binary's own directory, and
+    // the rendered config always references `geosite:category-ads-all`, so an
+    // install that promotes the binary alone dies at config load (exit 23).
+    let install_dir = dir.path().join("xray");
+    for name in ["geoip.dat", "geosite.dat"] {
+        let path = install_dir.join(name);
+        assert!(
+            path.is_file(),
+            "{name} must be promoted beside the binary, expected {}",
+            path.display()
+        );
+    }
 
     // Archive + versioned dir should be cleaned up.
     let downloads_dir = dir.path().join("downloads");
@@ -159,6 +209,32 @@ async fn ensure_xray_downloads_extracts_and_promotes_binary() {
 }
 
 #[tokio::test]
+async fn ensure_xray_extracts_archive_nested_under_a_top_directory() {
+    // Mirrors that repackage the release under a single top-level directory
+    // must keep working alongside the flat layout the official zips use.
+    let server =
+        stand_up_release_endpoint(build_minimal_xray_zip(Some("xray-core-v1.8.5")), 200).await;
+    let dir = tempdir().unwrap();
+    let installer = Installer::new(server.uri()).unwrap();
+
+    let xray_path = installer.ensure_xray(dir.path()).await.expect("install");
+
+    assert!(
+        xray_path.is_file(),
+        "xray binary not extracted at {}",
+        xray_path.display()
+    );
+    // The data files are nested with it, so stripping the top directory must
+    // leave them next to the binary too — not only the binary.
+    for name in ["geoip.dat", "geosite.dat"] {
+        assert!(
+            dir.path().join("xray").join(name).is_file(),
+            "{name} must be promoted beside the binary"
+        );
+    }
+}
+
+#[tokio::test]
 async fn ensure_xray_is_idempotent_when_binary_present() {
     let dir = tempdir().unwrap();
     let xray_dir = dir.path().join("xray");
@@ -169,6 +245,11 @@ async fn ensure_xray_is_idempotent_when_binary_present() {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&placeholder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // A complete install also carries the assets xray loads at startup; a binary
+    // on its own is not an install (see `ensure_xray_reinstalls_an_unstartable_install`).
+    for name in ["geoip.dat", "geosite.dat"] {
+        std::fs::write(xray_dir.join(name), b"data").unwrap();
     }
 
     // Use a never-reached mock; the call should never hit it.
@@ -188,6 +269,40 @@ async fn ensure_xray_is_idempotent_when_binary_present() {
             .unwrap_or(0),
         0
     );
+}
+
+/// Builds left by earlier versions promote the binary without the assets (xray
+/// exits 23 at config load) or without the exec bit (spawn fails with EACCES).
+/// Seeing one of those at startup must re-install, not report ready.
+#[tokio::test]
+async fn ensure_xray_reinstalls_an_unstartable_install() {
+    let server = stand_up_release_endpoint(build_minimal_xray_zip(None), 200).await;
+    let dir = tempdir().unwrap();
+    let xray_dir = dir.path().join("xray");
+    std::fs::create_dir_all(&xray_dir).unwrap();
+    let stale = xray_dir.join(if cfg!(windows) { "xray.exe" } else { "xray" });
+    std::fs::write(&stale, b"stale binary without assets").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let installer = Installer::new(server.uri()).unwrap();
+    let xray_path = installer
+        .ensure_xray(dir.path())
+        .await
+        .expect("should re-install over the unusable install");
+
+    assert_eq!(xray_path, stale);
+    assert_ne!(
+        std::fs::read(&xray_path).unwrap(),
+        b"stale binary without assets",
+        "the stale binary must have been replaced"
+    );
+    for name in ["geoip.dat", "geosite.dat"] {
+        assert!(xray_dir.join(name).is_file(), "{name} must be installed");
+    }
 }
 
 #[tokio::test]
@@ -258,7 +373,7 @@ async fn ensure_xray_missing_asset_returns_actionable_error() {
 
 #[tokio::test]
 async fn install_version_downloads_latest_into_staging() {
-    let server = stand_up_release_endpoint(build_minimal_xray_zip("v1.8.5"), 200).await;
+    let server = stand_up_release_endpoint(build_minimal_xray_zip(None), 200).await;
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
 
@@ -299,12 +414,12 @@ async fn install_version_explicit_tag_only_hits_tag_route() {
 
     // Only mount the tags endpoint — no /releases/latest mock.
     Mock::given(method("GET"))
-        .and(path("/XTLS/Xray-core/releases/tags/v1.8.10"))
+        .and(path("/repos/XTLS/Xray-core/releases/tags/v1.8.10"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&server)
         .await;
 
-    let archive = build_minimal_xray_zip("v1.8.10");
+    let archive = build_minimal_xray_zip(None);
     Mock::given(method("GET"))
         .and(path("/xray.zip"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
@@ -340,7 +455,7 @@ async fn install_version_explicit_tag_only_hits_tag_route() {
 async fn install_version_http_429_returns_error_no_staging() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/XTLS/Xray-core/releases/latest"))
+        .and(path(REPO_PATH))
         .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
         .mount(&server)
         .await;
@@ -384,7 +499,7 @@ async fn install_version_missing_asset_returns_error() {
         }]
     });
     Mock::given(method("GET"))
-        .and(path("/XTLS/Xray-core/releases/latest"))
+        .and(path(REPO_PATH))
         .respond_with(ResponseTemplate::new(200).set_body_json(body))
         .mount(&server)
         .await;
