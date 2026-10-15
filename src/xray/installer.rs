@@ -9,6 +9,7 @@
 //! request.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rand::Rng;
@@ -150,10 +151,68 @@ pub(crate) fn promote_staged_xray(staged_bin: &Path, dest_dir: &Path) -> AppResu
     Ok(dest_bin)
 }
 
+/// Byte counters of an archive download, published as the bytes arrive.
+///
+/// The download writes, the settings page reads: the page polls the job status
+/// endpoint, and the endpoint snapshots whatever the transfer has reached when
+/// asked. Counters rather than formatted text because a progress bar needs the
+/// numbers to compute a percentage — MiB and `%` belong to the UI.
+///
+/// `total` is `None` until the server announces a `Content-Length`: a chunked
+/// or proxied response may never send one, and an invented denominator would
+/// show a percentage that means nothing.
+#[derive(Debug, Default)]
+pub struct DownloadProgress {
+    downloaded: AtomicU64,
+    total: AtomicU64,
+}
+
+impl DownloadProgress {
+    /// Start a new transfer of `total` bytes (`None` when the server did not
+    /// announce a length), discarding a previous transfer's counters.
+    pub fn begin(&self, total: Option<u64>) {
+        self.downloaded.store(0, Ordering::Relaxed);
+        self.total.store(total.unwrap_or(0), Ordering::Relaxed);
+    }
+
+    /// Record how many bytes of the archive have been written so far.
+    pub fn set_downloaded(&self, bytes: u64) {
+        self.downloaded.store(bytes, Ordering::Relaxed);
+    }
+
+    /// Bytes written so far, and the announced total (`None` when unknown).
+    pub fn snapshot(&self) -> (u64, Option<u64>) {
+        let total = self.total.load(Ordering::Relaxed);
+        (
+            self.downloaded.load(Ordering::Relaxed),
+            (total > 0).then_some(total),
+        )
+    }
+}
+
 pub struct Installer {
     http: reqwest::Client,
     download_base: String,
 }
+
+/// How long to wait for the connection to the download host to come up.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Maximum gap between two body reads. A slow-but-progressing transfer keeps
+/// resetting it; a stalled one fails instead of hanging forever.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Total budget for the small release-metadata JSON.
+const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Last-resort ceiling on the archive transfer, sized so even a very slow link
+/// finishes: reading a ~20 MB release at ~15 KB/s takes about 22 minutes.
+/// `scripts/dev.sh`'s readiness budget is deliberately larger than this.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Log download progress once per this many bytes, so a slow cold start is
+/// visible to the operator (and to `scripts/dev.sh`) instead of looking hung.
+const DOWNLOAD_PROGRESS_STEP: u64 = 2 * 1024 * 1024;
 
 /// Whether an install already on disk can actually start: an executable binary
 /// (unix) with the [`DATA_FILES`] beside it.
@@ -182,12 +241,29 @@ fn install_is_startable(xray_dir: &Path, xray_bin: &Path) -> bool {
     }
 }
 
+/// Bytes rendered as MiB, for download progress lines.
+fn human_bytes(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+}
+
 impl Installer {
     pub fn new(download_base: impl Into<String>) -> AppResult<Self> {
+        // No blanket request timeout: the old 120s cap aborted the ~20 MB
+        // archive on a slow-but-healthy link (at 56 KB/s — measured on a
+        // domestic line — a full transfer needs ~6 minutes), and the panel
+        // reported itself ready anyway, so a cold start looked like a silent
+        // failure. Instead the client bounds connecting and stalling per
+        // request:
+        // - `connect_timeout` bounds reaching the host,
+        // - `read_timeout` bounds each gap between body reads and resets after
+        //   every successful one, so progress forgives slowness but a dead
+        //   connection still fails promptly with an actionable error,
+        // - the metadata call keeps an explicit total timeout, and the archive
+        //   keeps a generous one as a last resort (see `download_to`).
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
-            .timeout(Duration::from_secs(120))
-            .connect_timeout(Duration::from_secs(15))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
             .build()
             .map_err(|e| AppError::Xray(format!("http client init failed: {e}")))?;
         Ok(Self {
@@ -196,7 +272,15 @@ impl Installer {
         })
     }
 
-    pub async fn ensure_xray(&self, data_dir: &Path) -> AppResult<PathBuf> {
+    /// Install xray into `${data_dir}/xray/` if it is not already startable.
+    ///
+    /// `progress` publishes the archive's byte counters for the caller's UI; the
+    /// startup path has none and passes `None`.
+    pub async fn ensure_xray(
+        &self,
+        data_dir: &Path,
+        progress: Option<&DownloadProgress>,
+    ) -> AppResult<PathBuf> {
         let xray_dir = data_dir.join("xray");
         let xray_bin = xray_dir.join(if cfg!(windows) { "xray.exe" } else { "xray" });
 
@@ -207,7 +291,7 @@ impl Installer {
         }
 
         // fetch_and_extract does NOT rename or chmod — we do that here.
-        let (staging_xray, tag) = self.fetch_and_extract(data_dir, None).await?;
+        let (staging_xray, tag) = self.fetch_and_extract(data_dir, None, progress).await?;
 
         // Promotion carries the binary AND the assets xray loads from its own
         // directory, and leaves the binary executable; see `promote_staged_xray`.
@@ -234,12 +318,15 @@ impl Installer {
     /// the assets beside the binary come along — and cleanup.
     ///
     /// Staging directory is `${data_dir}/xray-<tag>-staging-<rand16hex>` with mode 0o700.
+    ///
+    /// `progress` publishes the archive's byte counters for the caller's UI.
     pub async fn install_version(
         &self,
         data_dir: &Path,
         version: Option<&str>,
+        progress: Option<&DownloadProgress>,
     ) -> AppResult<(PathBuf, String)> {
-        self.fetch_and_extract(data_dir, version).await
+        self.fetch_and_extract(data_dir, version, progress).await
     }
 
     async fn fetch_release(&self, version: Option<&str>) -> AppResult<Release> {
@@ -261,18 +348,34 @@ impl Installer {
                 XRAY_REPO
             )
         };
-        let resp = self.http.get(&url).send().await.map_err(|e| {
-            AppError::Xray(format!(
-                "xray release metadata request failed: {e}; check connectivity to {}",
-                self.download_base
-            ))
-        })?;
+        let resp = self
+            .http
+            .get(&url)
+            .timeout(METADATA_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Xray(format!(
+                    "xray release metadata request failed: {e}; check connectivity to {}",
+                    self.download_base
+                ))
+            })?;
         let status = resp.status();
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(AppError::Xray(
-                "GitHub rate-limited (HTTP 429); set XRAY_DOWNLOAD_BASE to a mirror or retry later"
-                    .to_string(),
-            ));
+        // GitHub throttles a token-less client with 429, and answers 403 with
+        // `x-ratelimit-remaining: 0` once the hourly quota is spent. Both mean
+        // "come back later or point XRAY_DOWNLOAD_BASE at a mirror", which is
+        // worth saying out loud instead of reporting a bare HTTP 403.
+        let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || (status == reqwest::StatusCode::FORBIDDEN
+                && resp
+                    .headers()
+                    .get("x-ratelimit-remaining")
+                    .map(|v| v.as_bytes() == b"0")
+                    .unwrap_or(false));
+        if rate_limited {
+            return Err(AppError::Xray(format!(
+                "GitHub rate-limited (HTTP {status}); set XRAY_DOWNLOAD_BASE to a mirror or retry later"
+            )));
         }
         if !status.is_success() {
             return Err(AppError::Xray(format!(
@@ -294,6 +397,7 @@ impl Installer {
         &self,
         data_dir: &Path,
         version: Option<&str>,
+        progress: Option<&DownloadProgress>,
     ) -> AppResult<(PathBuf, String)> {
         use std::os::unix::fs::PermissionsExt;
 
@@ -324,7 +428,7 @@ impl Installer {
         let archive_path = downloads_dir.join(&archive_name);
 
         tracing::info!(url = %asset.browser_download_url, dest = %archive_path.display(), "downloading xray-core");
-        self.download_to(&asset.browser_download_url, &archive_path)
+        self.download_to(&asset.browser_download_url, &archive_path, progress)
             .await
             .map_err(|e| {
                 let _ = std::fs::remove_file(&archive_path);
@@ -363,22 +467,73 @@ impl Installer {
         Ok((inner_bin, release.tag_name))
     }
 
-    async fn download_to(&self, url: &str, dest: &Path) -> AppResult<()> {
-        let resp = self
+    /// Stream the archive straight to `dest`, chunk by chunk.
+    ///
+    /// The body is written as it arrives instead of being buffered whole (the
+    /// archive is ~20 MB), and the client's read timeout — not a total request
+    /// timeout — is what fails a stalled transfer, so a slow link still
+    /// completes. Progress is published to `progress` on every chunk and logged
+    /// every [`DOWNLOAD_PROGRESS_STEP`] bytes: a cold start over a slow link
+    /// otherwise looks hung to the operator.
+    ///
+    /// A short body is rejected here rather than left on disk as a corrupt
+    /// archive that fails later inside zip extraction.
+    async fn download_to(
+        &self,
+        url: &str,
+        dest: &Path,
+        progress: Option<&DownloadProgress>,
+    ) -> AppResult<()> {
+        use tokio::io::AsyncWriteExt;
+        let mut resp = self
             .http
             .get(url)
+            .timeout(DOWNLOAD_TIMEOUT)
             .send()
             .await
             .map_err(|e| AppError::Xray(format!("xray download request failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
-            return Err(AppError::Xray(format!("xray download HTTP {status}")));
+            return Err(AppError::Xray(format!(
+                "xray download HTTP {status} from {url}"
+            )));
         }
-        let bytes = resp
-            .bytes()
+        let expected = resp.content_length();
+        if let Some(progress) = progress {
+            progress.begin(expected);
+        }
+        let mut file = tokio::fs::File::create(dest).await.map_err(AppError::Io)?;
+        let mut written: u64 = 0;
+        let mut next_report = DOWNLOAD_PROGRESS_STEP;
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .map_err(|e| AppError::Xray(format!("xray download body read failed: {e}")))?;
-        std::fs::write(dest, &bytes).map_err(AppError::Io)?;
+            .map_err(|e| AppError::Xray(format!("xray download body read failed: {e}")))?
+        {
+            file.write_all(&chunk).await.map_err(AppError::Io)?;
+            written += chunk.len() as u64;
+            if let Some(progress) = progress {
+                progress.set_downloaded(written);
+            }
+            if written >= next_report {
+                next_report = written + DOWNLOAD_PROGRESS_STEP;
+                tracing::info!(
+                    downloaded = %human_bytes(written),
+                    total = expected.map(human_bytes).unwrap_or_else(|| "?".to_string()),
+                    "downloading xray-core"
+                );
+            }
+        }
+        file.flush().await.map_err(AppError::Io)?;
+
+        if let Some(expected) = expected {
+            if written != expected {
+                return Err(AppError::Xray(format!(
+                    "xray download truncated: got {written} bytes of {expected}"
+                )));
+            }
+        }
+        tracing::info!(bytes = written, "xray archive downloaded");
         Ok(())
     }
 
@@ -574,6 +729,75 @@ mod tests {
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         assert!(install_is_startable(&xray_dir, &bin));
+    }
+
+    /// The settings page polls the job status while the archive downloads, so
+    /// the counters have to advance as the bytes arrive: a progress value only
+    /// written at the end would leave the bar empty for the whole transfer.
+    #[tokio::test]
+    async fn download_publishes_progress_while_the_body_streams() {
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const TOTAL: usize = 64 * 1024;
+
+        // A body in two parts, the second sent after a pause, so a snapshot
+        // taken during the transfer has a partial value to report.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(format!("HTTP/1.1 200 OK\r\ncontent-length: {TOTAL}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(&vec![b'a'; TOTAL / 2]).await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            socket
+                .write_all(&vec![b'b'; TOTAL - TOTAL / 2])
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("Xray-test.zip");
+        let installer = Installer::new("http://127.0.0.1:1").unwrap();
+        let progress = Arc::new(DownloadProgress::default());
+
+        let url = format!("http://{addr}/xray.zip");
+        let download = {
+            let dest = dest.clone();
+            let progress = Arc::clone(&progress);
+            tokio::spawn(async move { installer.download_to(&url, &dest, Some(&progress)).await })
+        };
+
+        // Mid-transfer: half the body is written and the total is announced.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let (downloaded, total) = progress.snapshot();
+            if downloaded > 0 {
+                assert_eq!(
+                    downloaded,
+                    (TOTAL / 2) as u64,
+                    "a mid-transfer snapshot must report the bytes received so far"
+                );
+                assert_eq!(total, Some(TOTAL as u64));
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the download never published progress"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        download.await.unwrap().expect("download should succeed");
+        assert_eq!(progress.snapshot(), (TOTAL as u64, Some(TOTAL as u64)));
+        assert_eq!(std::fs::metadata(&dest).unwrap().len(), TOTAL as u64);
     }
 
     /// Extraction writes 0o644 files, so a promotion that does not set the mode

@@ -14,10 +14,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::sleep;
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::time::{sleep, sleep_until};
 
 use crate::error::{AppError, AppResult};
 
@@ -66,21 +66,57 @@ const BACKOFF: [Duration; 7] = [
 ];
 const STABLE_RESET_AFTER: Duration = Duration::from_secs(300);
 
-// Stop and RestartNow have distinct semantics:
+// Stop, StopForReplace and Start have distinct semantics:
 // - Stop: panel shutdown; kills xray and terminates the supervisor loop.
-// - RestartNow: xray binary replacement; kills xray but keeps the supervisor
-//   loop alive so the next spawn picks up the new binary.
-#[derive(Debug, Clone)]
+// - StopForReplace: xray binary replacement. Kills xray, keeps the loop alive
+//   but holds xray *down* (no respawn) until Start, so the caller can swap the
+//   file while nothing is executing it. This is the only ordering that works
+//   on Windows, where the image of a running process cannot be overwritten at
+//   all. The ack fires once the child is gone.
+// - Start: spawn xray — after a StopForReplace, or as a restart on its own —
+//   and report the outcome once the child has survived START_GRACE, so a
+//   replacement that cannot even start is reported instead of being assumed
+//   successful.
+#[derive(Debug)]
 pub enum SupervisorCommand {
     Reload,
     Stop,
-    RestartNow,
+    StopForReplace {
+        ack: oneshot::Sender<()>,
+    },
+    Start {
+        ack: oneshot::Sender<Result<(), String>>,
+    },
 }
+
+/// How long a freshly spawned xray may stay silent before `Start` reports a
+/// failure. xray prints its banner (and then its config line) to stdout within
+/// milliseconds of starting, so silence means it did not really come up — a
+/// hung binary, or one the scheduler has not run yet. Waiting longer than this
+/// only delays the verdict the caller is waiting for.
+const START_OUTPUT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Once it has produced output, xray must also stay alive this long before
+/// `Start` is reported as successful. A broken config or missing assets make it
+/// abort a few milliseconds after the banner (`Failed to start: …`, exit 23),
+/// which is what this window catches. A process that is up but not serving is
+/// the stats poll loop's business, not this check's.
+const START_CONFIRM_AFTER_OUTPUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Default)]
 struct SupervisorState {
     backoff_idx: usize,
     last_started: Option<Instant>,
+}
+
+/// What the supervisor is doing while no xray child is running.
+#[derive(Debug, Clone, Copy)]
+enum Idle {
+    /// xray exited on its own: wait out the crash backoff, then spawn again.
+    Backoff(Instant),
+    /// xray was stopped so its binary could be replaced; nothing may bring it
+    /// back up but a `Start` command.
+    HeldForReplace,
 }
 
 pub struct XraySupervisor {
@@ -153,18 +189,21 @@ impl XraySupervisor {
         cmd.arg("run")
             .arg("-c")
             .arg(&self.config_path)
-            // xray-core 的 stderr logger 写 `time.Now()`（本地时间）且不开
+            // xray-core 的 logger 写 `time.Now()`（本地时间）且不开
             // `log.LUTC`。面板把日志时间戳按 UTC 解析，所以必须把 xray
             // 的 `TZ` 强制锁定为 UTC，否则 `parse_xray_timestamp` 会把
             // 接入主机时区偏移塞进 `logged_at`。
             .env("TZ", "UTC")
-            .stdout(std::process::Stdio::null())
+            // 两条流都要接管：xray 的 access/error 日志按配置写 **stdout**
+            // （见 `xray::config` 的 `log` 段），而 Go 运行时的 panic 与
+            // `log.Fatal` 走 **stderr**。只接管其中一条都会丢诊断信息。
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         cmd
     }
 
-    async fn spawn(&self) -> AppResult<Child> {
+    async fn spawn(&self, first_output: watch::Sender<bool>) -> AppResult<Child> {
         let mut child = self.build_command().spawn().map_err(AppError::Io)?;
 
         // Record PID for orphan reaping. On Unix tokio fills the pid at spawn
@@ -186,63 +225,25 @@ impl XraySupervisor {
             }
         }
 
-        // Forward stderr to the rolling log file + tracing, and (when the
-        // panel wired a receiver) to the access-log parse-and-persist worker.
+        // Forward both of xray's output streams to the rolling log file +
+        // tracing, and (when the panel wired a receiver) to the access-log
+        // parse-and-persist worker. Each stream also reports its first line on
+        // `first_output`, which is how `Start` learns the child really ran.
+        if let Some(stdout) = child.stdout.take() {
+            forward_output(
+                stdout,
+                self.log_file.clone(),
+                self.log_tx.clone(),
+                first_output.clone(),
+            );
+        }
         if let Some(stderr) = child.stderr.take() {
-            let log_path = self.log_file.clone();
-            let log_tx = self.log_tx.clone();
-            tokio::spawn(async move {
-                // Open the log file once, up front; the handle lives as long
-                // as this task, so every read-line iteration can append.
-                let mut file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .ok();
-                let mut reader = BufReader::new(stderr);
-                let mut buf = String::new();
-                let mut dropped: u64 = 0;
-                loop {
-                    buf.clear();
-                    match reader.read_line(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    let line = buf.trim_end();
-                    let access = crate::xray::logs::is_access_log_line(line);
-                    // access 行（连接请求日志）已由 logs worker 落库到
-                    // SQLite；写入 xray.log 会在代理流量大时无界增长——跳过。
-                    // 面板日志里 access 行降级为 debug，error/warning 行
-                    // 保持 warn。
-                    if access {
-                        tracing::debug!(target: "xray", "{}", line);
-                    } else {
-                        tracing::warn!(target: "xray", "{}", line);
-                        if let Some(f) = file.as_mut() {
-                            use std::io::Write;
-                            let _ = writeln!(f, "{}", line);
-                        }
-                    }
-                    if let Some(tx) = &log_tx {
-                        // 访问日志是监控数据，可容忍丢失：通道满时丢行计数
-                        // 打点，绝不反压到 xray 的 stderr 管道拖住代理流量；
-                        // 接收端关闭（面板 shutdown）才退出循环。
-                        match tx.try_send(line.to_string()) {
-                            Ok(()) => {}
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                dropped += 1;
-                                if dropped % 1024 == 1 {
-                                    tracing::warn!(
-                                        dropped,
-                                        "log receiver full; dropping xray access lines"
-                                    );
-                                }
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                        }
-                    }
-                }
-            });
+            forward_output(
+                stderr,
+                self.log_file.clone(),
+                self.log_tx.clone(),
+                first_output,
+            );
         }
 
         let mut state = self.state.lock().await;
@@ -263,14 +264,16 @@ impl XraySupervisor {
         delay
     }
 
-    async fn wait_and_backoff(&self, status: std::process::ExitStatus) {
+    /// Log an unexpected exit and report how long to wait before the next
+    /// spawn.
+    async fn backoff_after_crash(&self, status: std::process::ExitStatus) -> Duration {
         let delay = self.next_backoff().await;
         tracing::warn!(
             code = ?status.code(),
             ?delay,
             "xray exited unexpectedly; restarting after backoff"
         );
-        sleep(delay).await;
+        delay
     }
 
     /// Send SIGUSR1 to reload xray's config in place. Returns Ok on Unix
@@ -305,65 +308,231 @@ impl XraySupervisor {
     /// Main supervisor loop. Spawns xray, waits for it to exit, applies the
     /// backoff policy, respawns. Terminates cleanly on `Stop` command or
     /// graceful xray exit (admin stop).
+    ///
+    /// While no child is running the loop still answers commands — see [`Idle`]
+    /// — so a replacement or a stop never has to wait out a backoff timer.
     pub async fn run(self, mut rx: mpsc::Receiver<SupervisorCommand>) -> AppResult<()> {
         // Reap exactly once, before the first spawn. Inside the loop the pid
         // file describes our own live child, so reaping there would kill the
         // process we just started.
         self.reap_stale().await;
 
+        // Set while no child is running — see [`Idle`].
+        let mut idle: Option<Idle> = None;
+        // Verdict owed to the most recent `Start`, resolved when the child
+        // either survives START_GRACE or exits first.
+        let mut start_ack: Option<oneshot::Sender<Result<(), String>>> = None;
+
         // Outer loop: spawn → wait → backoff → respawn
-        loop {
-            let mut child = match self.spawn().await {
+        'respawn: loop {
+            if let Some(current) = idle {
+                // Nothing is running. Commands are still answered here, and not
+                // only after the timer: a backoff reaches a minute, which would
+                // outlast a `StopForReplace` ack (15s in the update job) while
+                // there was nothing running to stop in the first place. That is
+                // precisely the crash-looping xray an operator reaches for
+                // "update now" to repair.
+                let wait = async {
+                    match current {
+                        Idle::Backoff(deadline) => sleep_until(deadline.into()).await,
+                        // Held down for a replacement: only a command (or the
+                        // panel shutting down) ends this state.
+                        Idle::HeldForReplace => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::select! {
+                    cmd = rx.recv() => {
+                        match cmd {
+                            None | Some(SupervisorCommand::Stop) => return Ok(()),
+                            Some(SupervisorCommand::Start { ack }) => {
+                                if let Some(superseded) = start_ack.replace(ack) {
+                                    let _ = superseded
+                                        .send(Err("superseded by a newer start request".into()));
+                                }
+                                idle = None;
+                            }
+                            Some(SupervisorCommand::StopForReplace { ack }) => {
+                                // Already down: a second replacement request is
+                                // a no-op but still has to ack, or its caller
+                                // waits forever.
+                                fail_pending_start(
+                                    start_ack.take(),
+                                    "xray stopped before the restart could be confirmed",
+                                );
+                                // The child crashed with the pid file left in
+                                // place (see the exit path); a stale pid could
+                                // name an unrelated process by the time the next
+                                // panel run reaps it.
+                                let _ = std::fs::remove_file(&self.pid_file);
+                                idle = Some(Idle::HeldForReplace);
+                                let _ = ack.send(());
+                            }
+                            Some(SupervisorCommand::Reload) => {
+                                // Nothing is running to signal, and the next
+                                // spawn reads the config file as it is by then.
+                                tracing::debug!(
+                                    "reload requested while xray is down; the next spawn reads the config"
+                                );
+                            }
+                        }
+                    }
+                    _ = wait => {
+                        idle = None;
+                    }
+                }
+                continue;
+            }
+
+            let (output_tx, mut output_rx) = watch::channel(false);
+            let mut child = match self.spawn(output_tx).await {
                 Ok(c) => c,
                 Err(e) => {
+                    fail_pending_start(start_ack.take(), &format!("failed to spawn xray: {e}"));
                     tracing::error!(error = %e, "failed to spawn xray; backing off");
-                    sleep(self.next_backoff().await).await;
+                    idle = Some(Idle::Backoff(Instant::now() + self.next_backoff().await));
                     continue;
                 }
             };
+            // Verdict deadline for a pending `Start`: it has to show output
+            // before this fires, and then survive long enough afterwards to
+            // clear `START_CONFIRM_AFTER_OUTPUT`, which is why the deadline is
+            // pushed forward when the first line arrives.
+            let mut verdict_deadline = Instant::now() + START_OUTPUT_TIMEOUT;
+            let mut output_seen = false;
+            // The output watch is one-shot: it must be taken out of the select
+            // once it fires, because a closed channel reports Ready(Err) on
+            // every poll and would otherwise spin the loop.
+            let mut output_watch_armed = true;
 
-            tokio::select! {
-                biased;
-                cmd = rx.recv() => {
-                    match cmd {
-                        Some(SupervisorCommand::Stop) | None => {
-                            stop_child(&mut child).await;
-                            let _ = std::fs::remove_file(&self.pid_file);
-                            return Ok(());
-                        }
-                        Some(SupervisorCommand::Reload) => {
-                            if let Err(e) = self.reload().await {
-                                tracing::warn!(error = %e, "xray reload failed");
+            // Inner loop: keep this child handle alive across commands that do
+            // not end its life — dropping it would trigger `kill_on_drop` and
+            // take xray down. Only the terminal paths leave for `'respawn`.
+            loop {
+                tokio::select! {
+                    biased;
+                    cmd = rx.recv() => {
+                        match cmd {
+                            Some(SupervisorCommand::Stop) | None => {
+                                fail_pending_start(
+                                    start_ack.take(),
+                                    "xray stopped before the restart could be confirmed",
+                                );
+                                stop_child(&mut child).await;
+                                let _ = std::fs::remove_file(&self.pid_file);
+                                return Ok(());
+                            }
+                            Some(SupervisorCommand::Start { ack }) => {
+                                // Restart: exec the binary on disk now and give
+                                // the caller a verdict on it.
+                                if let Some(superseded) = start_ack.replace(ack) {
+                                    let _ = superseded
+                                        .send(Err("superseded by a newer start request".into()));
+                                }
+                                stop_child(&mut child).await;
+                                continue 'respawn;
+                            }
+                            Some(SupervisorCommand::StopForReplace { ack }) => {
+                                fail_pending_start(
+                                    start_ack.take(),
+                                    "xray stopped before the restart could be confirmed",
+                                );
+                                stop_child(&mut child).await;
+                                // Drop the pid file: this child is gone on
+                                // purpose, and a stale pid could name an
+                                // unrelated process by the time the next panel
+                                // run reaps it.
+                                let _ = std::fs::remove_file(&self.pid_file);
+                                idle = Some(Idle::HeldForReplace);
+                                let _ = ack.send(());
+                                continue 'respawn;
+                            }
+                            Some(SupervisorCommand::Reload) => {
+                                match self.reload().await {
+                                    Ok(()) => {}
+                                    // No in-place reload on this platform, so
+                                    // the only way to apply the new config is
+                                    // to restart the child.
+                                    Err(AppError::NotImplemented(_)) => {
+                                        tracing::info!(
+                                            "xray cannot reload in place on this platform; restarting to apply the config"
+                                        );
+                                        stop_child(&mut child).await;
+                                        continue 'respawn;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "xray reload failed");
+                                    }
+                                }
                             }
                         }
-                        Some(SupervisorCommand::RestartNow) => {
-                            stop_child(&mut child).await;
-                            continue;
+                    }
+                    status = child.wait() => {
+                        let owed = start_ack.take();
+                        // The pid file is left in place on an unexpected exit: the
+                        // next spawn overwrites it, and keeping it lets an operator
+                        // inspect the last known pid. It is only removed on a clean
+                        // Stop.
+                        match status {
+                            Ok(s) if s.success() => {
+                                fail_pending_start(
+                                    owed,
+                                    "xray exited cleanly before the restart could be confirmed",
+                                );
+                                let _ = std::fs::remove_file(&self.pid_file);
+                                tracing::info!(code = ?s.code(), "xray exited cleanly");
+                                return Ok(());
+                            }
+                            Ok(s) => {
+                                fail_pending_start(
+                                    owed,
+                                    &format!("xray exited immediately (status {:?})", s.code()),
+                                );
+                                let delay = self.backoff_after_crash(s).await;
+                                idle = Some(Idle::Backoff(Instant::now() + delay));
+                            }
+                            Err(e) => {
+                                fail_pending_start(owed, &format!("xray wait failed: {e}"));
+                                tracing::error!(error = %e, "xray wait failed; backing off");
+                                let delay = self.next_backoff().await;
+                                idle = Some(Idle::Backoff(Instant::now() + delay));
+                            }
+                        }
+                        continue 'respawn;
+                    }
+                    // Reached only while the child is still running — an exit
+                    // is observed by the branch above, which is polled first.
+                    _ = sleep_until(verdict_deadline.into()), if start_ack.is_some() => {
+                        if let Some(ack) = start_ack.take() {
+                            let _ = ack.send(if output_seen {
+                                Ok(())
+                            } else {
+                                Err(format!(
+                                    "xray produced no output within {}s; it never came up",
+                                    START_OUTPUT_TIMEOUT.as_secs()
+                                ))
+                            });
                         }
                     }
-                }
-                status = child.wait() => {
-                    // The pid file is left in place on an unexpected exit: the
-                    // next spawn overwrites it, and keeping it lets an operator
-                    // inspect the last known pid. It is only removed on a clean
-                    // Stop.
-                    match status {
-                        Ok(s) if s.success() => {
-                            let _ = std::fs::remove_file(&self.pid_file);
-                            tracing::info!(code = ?s.code(), "xray exited cleanly");
-                            return Ok(());
-                        }
-                        Ok(s) => {
-                            self.wait_and_backoff(s).await;
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "xray wait failed; backing off");
-                            sleep(self.next_backoff().await).await;
+                    // The child wrote something, so it is really running; from
+                    // here on it only has to stay alive briefly.
+                    changed = output_rx.changed(), if output_watch_armed && start_ack.is_some() => {
+                        output_watch_armed = false;
+                        if changed.is_ok() {
+                            output_seen = true;
+                            verdict_deadline = Instant::now() + START_CONFIRM_AFTER_OUTPUT;
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// Resolve a pending `Start` with a failure, when its child died (or is being
+/// stopped) before it could be confirmed as started.
+fn fail_pending_start(ack: Option<oneshot::Sender<Result<(), String>>>, reason: &str) {
+    if let Some(ack) = ack {
+        let _ = ack.send(Err(reason.to_string()));
     }
 }
 
@@ -373,4 +542,73 @@ async fn stop_child(child: &mut Child) {
         let _ = child.kill().await;
     }
     let _ = child.wait().await;
+}
+
+/// Consume one of the child's output streams line by line:每行写入
+/// `$DATA_DIR/xray.log`（access 行除外——它们由 logs worker 落库 SQLite，
+/// 再写文件会在代理流量大时无界增长）、打进 tracing，并送进 access-log
+/// 解析 worker。
+///
+/// 单个任务同时服务 stdout 与 stderr，所以两条流的行都走同一条判定路径。
+fn forward_output<R>(
+    stream: R,
+    log_path: PathBuf,
+    log_tx: Option<mpsc::Sender<String>>,
+    first_output: watch::Sender<bool>,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        // Open the log file once, up front; the handle lives as long as this
+        // task, so every read-line iteration can append.
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .ok();
+        let mut reader = BufReader::new(stream);
+        let mut buf = String::new();
+        let mut dropped: u64 = 0;
+        loop {
+            buf.clear();
+            match reader.read_line(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            // Tell a pending `Start` that the child is really running. `send`
+            // is a no-op for the second and later lines.
+            if !*first_output.borrow() {
+                let _ = first_output.send(true);
+            }
+            let line = buf.trim_end();
+            // 面板日志里 access 行降级为 debug，error/warning 行保持 warn。
+            if crate::xray::logs::is_access_log_line(line) {
+                tracing::debug!(target: "xray", "{}", line);
+            } else {
+                tracing::warn!(target: "xray", "{}", line);
+                if let Some(f) = file.as_mut() {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", line);
+                }
+            }
+            if let Some(tx) = &log_tx {
+                // 访问日志是监控数据，可容忍丢失：通道满时丢行计数打点，
+                // 绝不反压到 xray 的输出管道拖住代理流量；接收端关闭
+                // （面板 shutdown）才退出循环。
+                match tx.try_send(line.to_string()) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        dropped += 1;
+                        if dropped % 1024 == 1 {
+                            tracing::warn!(
+                                dropped,
+                                "log receiver full; dropping xray access lines"
+                            );
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
+        }
+    });
 }

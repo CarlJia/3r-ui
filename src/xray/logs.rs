@@ -1,7 +1,7 @@
 //! xray 访问日志（access log）的解析与持久化。
 //!
-//! xray 被配置为 `log.access = "@stderr"` 时，每条连接请求都会在 stderr
-//! 产生一行输出。`XraySupervisor` 把每一行 stderr 通过 mpsc 通道送进来，
+//! xray 被配置为 `log.access = ""`（写标准输出）时，每条连接请求都会产生
+//! 一行输出。`XraySupervisor` 把子进程的每一行 stdout/stderr 通过 mpsc 通道送进来，
 //! 这里解析并把可识别的访问日志行落库到 `connection_logs` 表；无法识别
 //! 的行（xray 的 error/warning 内部输出等）直接丢弃，不进入
 //! `connection_logs`。

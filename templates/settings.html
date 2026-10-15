@@ -65,6 +65,30 @@
     }
     .status-badge-succeeded { background: #e3f5e9; color: #1a7f42; }
     .status-badge-failed { background: #fdecec; color: #a4262c; }
+    .progress {
+      margin-top: 6px; height: 6px; max-width: 320px; border-radius: 999px;
+      background: #eceef1; overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%; width: 0; border-radius: 999px; background: #3b82f6;
+      transition: width .3s ease;
+    }
+    /* No Content-Length yet: slide a pill through the track instead of drawing
+       a percentage that means nothing. */
+    .progress-bar-indeterminate {
+      width: 40%; animation: progress-indeterminate 1.2s ease-in-out infinite;
+    }
+    @keyframes progress-indeterminate {
+      0% { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+    .progress-text {
+      display: block; margin-top: 4px; font-size: 12px; opacity: .65;
+      font-variant-numeric: tabular-nums;
+    }
+    @media (prefers-color-scheme: dark) {
+      .progress { background: #2c3037; }
+    }
     .table-scroll { overflow-x: auto; }
     {% include "sidebar_style.html" %}
   </style>
@@ -131,10 +155,20 @@
         </thead>
         <tbody>
           {% for job in jobs %}
-          <tr data-job-id="{{ job.id }}" data-stage-active="{{ job.is_active }}">
+          <tr data-job-id="{{ job.id }}"
+              data-stage-active="{{ job.is_active }}"
+              data-stage="{{ job.stage_key }}"
+              data-downloaded="{{ job.downloaded_bytes }}"
+              data-total="{% match job.total_bytes %}{% when Some with (t) %}{{ t }}{% when None %}0{% endmatch %}">
             <td><span style="font-family:monospace;font-size:12px">{{ job.id }}</span></td>
             <td><span class="status-badge status-badge-{{ job.stage_key }}">{{ job.stage_label }}</span></td>
-            <td class="status-message">{{ job.message }}</td>
+            <td class="status-message">
+              <span class="status-message-text">{{ job.message }}</span>
+              <div class="progress" hidden>
+                <div class="progress-bar"></div>
+                <span class="progress-text"></span>
+              </div>
+            </td>
             <td>{{ job.started_at_iso }}</td>
           </tr>
           {% endfor %}
@@ -149,6 +183,67 @@
 
   <script>
     document.addEventListener("DOMContentLoaded", function() {
+      function formatBytes(n) {
+        var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        var i = 0;
+        while (n >= 1024 && i < units.length - 1) { n = n / 1024; i++; }
+        return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+      }
+
+      // The download is the only stage with a meaningful length; the stages
+      // after it are a replace + restart measured in seconds.
+      function isDownloadStage(stage) {
+        return stage === "downloading" || stage === "downloaded" || stage === "restarting";
+      }
+
+      function renderProgress(row, stage, downloaded, total) {
+        var wrap = row.querySelector(".progress");
+        if (!wrap) return;
+        var show = isDownloadStage(stage);
+        wrap.hidden = !show;
+        if (!show) return;
+
+        var bar = wrap.querySelector(".progress-bar");
+        var text = wrap.querySelector(".progress-text");
+        if (total > 0) {
+          var percent = Math.min(100, Math.round(downloaded * 100 / total));
+          bar.classList.remove("progress-bar-indeterminate");
+          bar.style.width = percent + "%";
+          text.textContent = percent + "% · " + formatBytes(downloaded) + " / " + formatBytes(total);
+        } else {
+          // Without a Content-Length a percentage would be a guess.
+          bar.classList.add("progress-bar-indeterminate");
+          bar.style.width = "";
+          text.textContent = downloaded > 0
+            ? "已下载 " + formatBytes(downloaded)
+            : "正在连接下载源…";
+        }
+      }
+
+      // Paint a row from one status payload. Used on load (from the rendered
+      // row) and after every poll, so a reload shows what the next poll would.
+      function renderRow(row, data) {
+        var stage = String(data.stage || "").toLowerCase();
+        var badge = row.querySelector(".status-badge");
+        var msg = row.querySelector(".status-message-text");
+        if (badge && data.stage_label) {
+          badge.textContent = data.stage_label;
+          badge.className = "status-badge status-badge-" + (data.stage_key || stage);
+        }
+        if (msg && data.message) {
+          msg.textContent = data.message;
+        }
+        renderProgress(row, stage, data.downloaded_bytes || 0, data.total_bytes || 0);
+      }
+
+      document.querySelectorAll("tr[data-job-id]").forEach(function(row) {
+        renderRow(row, {
+          stage: row.getAttribute("data-stage"),
+          downloaded_bytes: parseInt(row.getAttribute("data-downloaded"), 10) || 0,
+          total_bytes: parseInt(row.getAttribute("data-total"), 10) || 0
+        });
+      });
+
       var rows = document.querySelectorAll("tr[data-job-id][data-stage-active=\"true\"]");
       rows.forEach(function(row) {
         var jobId = row.getAttribute("data-job-id");
@@ -156,15 +251,7 @@
           fetch("/admin/settings/xray/status?job=" + encodeURIComponent(jobId))
             .then(function(resp) { return resp.json(); })
             .then(function(data) {
-              var badge = row.querySelector(".status-badge");
-              var msg = row.querySelector(".status-message");
-              if (badge && data.stage) {
-                badge.textContent = data.stage_label || data.stage || "";
-                badge.className = "status-badge status-badge-" + (data.stage || "").toLowerCase();
-              }
-              if (msg && data.message) {
-                msg.textContent = data.message;
-              }
+              renderRow(row, data);
               if (data.stage === "Succeeded" || data.stage === "Failed") {
                 clearInterval(intervalId);
                 row.setAttribute("data-stage-active", "false");

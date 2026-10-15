@@ -9,6 +9,7 @@ use three_r_ui::config::AppConfig;
 use three_r_ui::crypto::password;
 use three_r_ui::web::settings::{JobStage, JobStatus};
 use three_r_ui::web::{self, AppState};
+use three_r_ui::xray::DownloadProgress;
 use tower::ServiceExt;
 
 const ADMIN_PW: &str = "s3cret-admin-pw";
@@ -129,6 +130,24 @@ async fn body_text(resp: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
+/// Insert a job record directly, bypassing the update flow.
+async fn seed_job(h: &Harness, id: &str, stage: JobStage, progress: Option<Arc<DownloadProgress>>) {
+    let mut guard = h.state.update_jobs.lock().await;
+    guard.insert(
+        id.to_string(),
+        JobStatus {
+            id: id.to_string(),
+            stage,
+            message: "测试任务".to_string(),
+            started_at: 2000,
+            finished_at: None,
+            installed_tag: None,
+            error_message: None,
+            progress,
+        },
+    );
+}
+
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -193,6 +212,7 @@ async fn second_trigger_while_active_fails_immediately() {
                 finished_at: None,
                 installed_tag: None,
                 error_message: None,
+                progress: None,
             },
         );
     }
@@ -257,6 +277,7 @@ async fn status_known_job_returns_its_status() {
                 finished_at: Some(1010),
                 installed_tag: Some("v1.8.10".to_string()),
                 error_message: None,
+                progress: None,
             },
         );
     }
@@ -274,6 +295,95 @@ async fn status_known_job_returns_its_status() {
         "should return Succeeded stage"
     );
     assert!(body.contains("v1.8.10"), "should include installed_tag");
+    // The polling page replaces the badge text with this label, so the endpoint
+    // has to send the translated stage rather than only the enum name.
+    assert!(
+        body.contains("\"stage_label\":\"成功\""),
+        "should include the Chinese stage label: {body}"
+    );
+}
+
+/// The progress bar is drawn from the byte counters in the status payload, so
+/// a download in flight has to report them.
+#[tokio::test]
+async fn status_reports_download_progress_bytes() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+
+    let progress = Arc::new(DownloadProgress::default());
+    progress.begin(Some(19_600_000));
+    progress.set_downloaded(4_900_000);
+    seed_job(
+        &h,
+        "downloading-job",
+        JobStage::Downloading,
+        Some(Arc::clone(&progress)),
+    )
+    .await;
+
+    let resp = get(
+        &h,
+        "/admin/settings/xray/status?job=downloading-job",
+        &session,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_text(resp).await;
+    assert!(
+        body.contains("\"downloaded_bytes\":4900000"),
+        "should report bytes received: {body}"
+    );
+    assert!(
+        body.contains("\"total_bytes\":19600000"),
+        "should report the announced size: {body}"
+    );
+
+    // A later poll must see the transfer's new position, not a stale copy.
+    progress.set_downloaded(19_600_000);
+    let resp = get(
+        &h,
+        "/admin/settings/xray/status?job=downloading-job",
+        &session,
+    )
+    .await;
+    let body = body_text(resp).await;
+    assert!(
+        body.contains("\"downloaded_bytes\":19600000"),
+        "should report the latest bytes written: {body}"
+    );
+}
+
+/// The page paints the bar from the row's data attributes before the first poll
+/// lands, so an in-flight job has to render them.
+#[tokio::test]
+async fn settings_page_renders_progress_attributes_for_an_active_job() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+
+    let progress = Arc::new(DownloadProgress::default());
+    progress.begin(Some(19_600_000));
+    progress.set_downloaded(4_900_000);
+    seed_job(
+        &h,
+        "rendered-job",
+        JobStage::Downloading,
+        Some(Arc::clone(&progress)),
+    )
+    .await;
+
+    let resp = get(&h, "/admin/settings", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    for expected in [
+        r#"data-job-id="rendered-job""#,
+        r#"data-stage-active="true""#,
+        r#"data-stage="downloading""#,
+        r#"data-downloaded="4900000""#,
+        r#"data-total="19600000""#,
+        r#"class="progress-bar""#,
+    ] {
+        assert!(html.contains(expected), "missing {expected} in page");
+    }
 }
 
 // ─── Template rendering assertions ─────────────────────────────────────────────

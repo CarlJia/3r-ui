@@ -203,7 +203,9 @@ async fn ensure_xray_binary(
     config: &AppConfig,
     installer: std::sync::Arc<xray::Installer>,
 ) -> std::path::PathBuf {
-    match installer.ensure_xray(&config.data_dir).await {
+    // No progress observer: at this point the panel has not bound its HTTP
+    // listener yet, so there is no page to report to.
+    match installer.ensure_xray(&config.data_dir, None).await {
         Ok(path) => {
             tracing::info!(path = %path.display(), "xray-core ready");
             path

@@ -5,7 +5,7 @@
 //! binary is required.
 
 use tempfile::tempdir;
-use three_r_ui::xray::Installer;
+use three_r_ui::xray::{DownloadProgress, Installer};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -168,7 +168,10 @@ async fn ensure_xray_downloads_extracts_and_promotes_binary() {
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
 
-    let xray_path = installer.ensure_xray(dir.path()).await.expect("install");
+    let xray_path = installer
+        .ensure_xray(dir.path(), None)
+        .await
+        .expect("install");
 
     assert!(
         xray_path.is_file(),
@@ -202,7 +205,7 @@ async fn ensure_xray_downloads_extracts_and_promotes_binary() {
 
     // Second call should be a no-op (no extra HTTP requests).
     let path2 = installer
-        .ensure_xray(dir.path())
+        .ensure_xray(dir.path(), None)
         .await
         .expect("second call");
     assert_eq!(path2, xray_path);
@@ -217,7 +220,10 @@ async fn ensure_xray_extracts_archive_nested_under_a_top_directory() {
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
 
-    let xray_path = installer.ensure_xray(dir.path()).await.expect("install");
+    let xray_path = installer
+        .ensure_xray(dir.path(), None)
+        .await
+        .expect("install");
 
     assert!(
         xray_path.is_file(),
@@ -256,7 +262,7 @@ async fn ensure_xray_is_idempotent_when_binary_present() {
     let server = MockServer::start().await;
     let installer = Installer::new(server.uri()).unwrap();
     let path = installer
-        .ensure_xray(dir.path())
+        .ensure_xray(dir.path(), None)
         .await
         .expect("no-op install");
     assert_eq!(path, placeholder);
@@ -290,7 +296,7 @@ async fn ensure_xray_reinstalls_an_unstartable_install() {
 
     let installer = Installer::new(server.uri()).unwrap();
     let xray_path = installer
-        .ensure_xray(dir.path())
+        .ensure_xray(dir.path(), None)
         .await
         .expect("should re-install over the unusable install");
 
@@ -317,7 +323,7 @@ async fn ensure_xray_returns_readable_error_on_http_429() {
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
     let err = installer
-        .ensure_xray(dir.path())
+        .ensure_xray(dir.path(), None)
         .await
         .expect_err("should fail");
     let msg = format!("{err}");
@@ -328,12 +334,42 @@ async fn ensure_xray_returns_readable_error_on_http_429() {
 }
 
 #[tokio::test]
+async fn ensure_xray_returns_readable_error_on_http_403_rate_limit() {
+    // GitHub reports an exhausted token-less quota as 403 plus
+    // `x-ratelimit-remaining: 0`, which the installer has to recognize as
+    // throttling rather than surfacing as a bare "HTTP 403".
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(REPO_PATH))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header("x-ratelimit-remaining", "0")
+                .set_body_string("API rate limit exceeded"),
+        )
+        .mount(&server)
+        .await;
+
+    let dir = tempdir().unwrap();
+    let installer = Installer::new(server.uri()).unwrap();
+    let err = installer
+        .ensure_xray(dir.path(), None)
+        .await
+        .expect_err("should fail");
+    let msg = format!("{err}");
+    assert!(msg.contains("rate-limited"), "msg: {msg}");
+    assert!(
+        msg.contains("mirror"),
+        "msg should point at a way out: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn ensure_xray_returns_readable_error_on_connection_failure() {
     let dir = tempdir().unwrap();
     // Point at a port nothing is listening on.
     let installer = Installer::new("http://127.0.0.1:1").unwrap();
     let err = installer
-        .ensure_xray(dir.path())
+        .ensure_xray(dir.path(), None)
         .await
         .expect_err("should fail");
     let msg = format!("{err}");
@@ -359,7 +395,7 @@ async fn ensure_xray_missing_asset_returns_actionable_error() {
     let dir = tempdir().unwrap();
     let installer = Installer::new(server.uri()).unwrap();
     let err = installer
-        .ensure_xray(dir.path())
+        .ensure_xray(dir.path(), None)
         .await
         .expect_err("should fail");
     let msg = format!("{err}");
@@ -378,7 +414,7 @@ async fn install_version_downloads_latest_into_staging() {
     let installer = Installer::new(server.uri()).unwrap();
 
     let (xray_path, tag) = installer
-        .install_version(dir.path(), None)
+        .install_version(dir.path(), None, None)
         .await
         .expect("install_version should succeed");
 
@@ -430,7 +466,7 @@ async fn install_version_explicit_tag_only_hits_tag_route() {
     let installer = Installer::new(server.uri()).unwrap();
 
     let (xray_path, tag) = installer
-        .install_version(dir.path(), Some("v1.8.10"))
+        .install_version(dir.path(), Some("v1.8.10"), None)
         .await
         .expect("install_version with explicit tag should succeed");
 
@@ -464,7 +500,7 @@ async fn install_version_http_429_returns_error_no_staging() {
     let installer = Installer::new(server.uri()).unwrap();
 
     let err = installer
-        .install_version(dir.path(), None)
+        .install_version(dir.path(), None, None)
         .await
         .expect_err("install_version should error on 429");
 
@@ -508,7 +544,7 @@ async fn install_version_missing_asset_returns_error() {
     let installer = Installer::new(server.uri()).unwrap();
 
     let err = installer
-        .install_version(dir.path(), None)
+        .install_version(dir.path(), None, None)
         .await
         .expect_err("install_version should error on missing asset");
 
@@ -516,5 +552,33 @@ async fn install_version_missing_asset_returns_error() {
     assert!(
         msg.contains("no asset") || msg.contains("for this platform"),
         "msg: {msg}"
+    );
+}
+
+/// The update job renders a progress bar from these counters, so an install has
+/// to publish the archive's byte counts to the observer the caller hands it.
+#[tokio::test]
+async fn install_version_publishes_download_progress() {
+    let archive = build_minimal_xray_zip(None);
+    let server = stand_up_release_endpoint(archive.clone(), 200).await;
+    let dir = tempdir().unwrap();
+    let installer = Installer::new(server.uri()).unwrap();
+    let progress = DownloadProgress::default();
+
+    installer
+        .install_version(dir.path(), None, Some(&progress))
+        .await
+        .expect("install_version should succeed");
+
+    let (downloaded, total) = progress.snapshot();
+    assert_eq!(
+        downloaded,
+        archive.len() as u64,
+        "the observer must see the whole archive"
+    );
+    assert_eq!(
+        total,
+        Some(archive.len() as u64),
+        "the announced size must reach the observer"
     );
 }

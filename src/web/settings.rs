@@ -2,8 +2,9 @@
 //!
 //! The settings page is read-only and shows current xray binary path, download
 //! base URL, and version. The update form triggers a background task that
-//! downloads a new xray binary, replaces the running one, and signals the
-//! supervisor to restart xray.
+//! downloads a new xray binary, stops xray, swaps the binary in, and starts it
+//! again — reporting success only once the supervisor confirms the new binary
+//! stayed up.
 
 use askama::Template;
 use axum::extract::{Extension, Query, State};
@@ -12,10 +13,13 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::oneshot;
 
 use crate::crypto::session::now_unix;
 use crate::web::middleware::{csrf_from_cookies, render_page, CurrentAdmin};
 use crate::web::AppState;
+use crate::xray::DownloadProgress;
 
 /// Job stage in the update state machine.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -29,7 +33,7 @@ pub enum JobStage {
 }
 
 /// Status record for an in-flight or completed xray-update job.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct JobStatus {
     pub id: String,
     pub stage: JobStage,
@@ -38,6 +42,15 @@ pub struct JobStatus {
     pub finished_at: Option<i64>,
     pub installed_tag: Option<String>,
     pub error_message: Option<String>,
+    /// Byte counters of the archive download, or `None` before it starts.
+    ///
+    /// Held rather than copied: the page polls the status endpoint, so reading
+    /// the counters when the record is serialized always reports the bytes the
+    /// transfer has actually reached. Copying them into the record on a timer
+    /// instead would show whatever the last tick saw — including a bar that
+    /// stops short of 100% when a fast download outruns the tick. The transfer
+    /// stops writing when it returns, so finished rows keep their final size.
+    pub progress: Option<Arc<DownloadProgress>>,
 }
 
 impl JobStatus {
@@ -50,6 +63,7 @@ impl JobStatus {
             finished_at: None,
             installed_tag: None,
             error_message: None,
+            progress: None,
         }
     }
 }
@@ -156,6 +170,10 @@ struct SettingsTemplate {
 }
 
 /// A job row prepared for template rendering, with Chinese stage label.
+///
+/// This is also the shape the status endpoint returns: the polling page and the
+/// server-rendered table then agree on every field, including the label it
+/// renders in the badge.
 #[derive(Clone, Serialize)]
 pub struct JobRowView {
     pub id: String,
@@ -165,7 +183,15 @@ pub struct JobRowView {
     pub message: String,
     pub started_at: i64,
     pub started_at_iso: String,
+    pub finished_at: Option<i64>,
     pub is_active: bool,
+    pub installed_tag: Option<String>,
+    pub error_message: Option<String>,
+    /// Bytes of the archive written so far.
+    pub downloaded_bytes: u64,
+    /// Size the server announced for the archive, or `None` while it has not
+    /// been announced — the bar is indeterminate until then.
+    pub total_bytes: Option<u64>,
 }
 
 impl JobRowView {
@@ -178,6 +204,13 @@ impl JobRowView {
             JobStage::Succeeded => "succeeded",
             JobStage::Failed => "failed",
         };
+        // Snapshot at render time, so a poll always sees the bytes the
+        // download has reached (see `JobStatus::progress`).
+        let (downloaded_bytes, total_bytes) = job
+            .progress
+            .as_ref()
+            .map(|p| p.snapshot())
+            .unwrap_or((0, None));
         Self {
             id: job.id.clone(),
             stage: job.stage.clone(),
@@ -186,7 +219,12 @@ impl JobRowView {
             message: job.message.clone(),
             started_at: job.started_at,
             started_at_iso: format_unix_time(job.started_at),
+            finished_at: job.finished_at,
             is_active: is_active(&job.stage),
+            installed_tag: job.installed_tag.clone(),
+            error_message: job.error_message.clone(),
+            downloaded_bytes,
+            total_bytes,
         }
     }
 }
@@ -287,12 +325,18 @@ pub fn spawn_update(state: AppState, job_id: String, version: Option<&str>) {
 async fn run_update(state: AppState, job_id: String, version: Option<String>) {
     let version_ref = version.as_deref();
 
+    // The download publishes its byte counters here; the job record carries the
+    // handle so the settings page can render a progress bar from it (see
+    // `JobStatus::progress`).
+    let progress = Arc::new(DownloadProgress::default());
+
     // Transition to Downloading.
     {
         let mut guard = state.update_jobs.lock().await;
         if let Some(job) = guard.get_mut(&job_id) {
             job.stage = JobStage::Downloading;
-            job.message = "从 GitHub 拉取 release 元数据".to_string();
+            job.message = "正在从下载源获取 xray-core".to_string();
+            job.progress = Some(Arc::clone(&progress));
         }
     }
 
@@ -308,7 +352,7 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
     // Download.
     let (staging_xray, tag) = match state
         .installer
-        .install_version(&state.config.data_dir, version_ref)
+        .install_version(&state.config.data_dir, version_ref, Some(&progress))
         .await
     {
         Ok((path, tag)) => (path, tag),
@@ -349,6 +393,14 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
         }
     }
 
+    // Replace the binary with xray stopped: a running image cannot be
+    // overwritten on Windows, and on every platform stopping first removes the
+    // window in which the supervisor could respawn the install being replaced.
+    if let Err(msg) = stop_xray_for_replace(&state).await {
+        push_failed(&state, &job_id, msg).await;
+        return;
+    }
+
     if let Err(e) = crate::xray::installer::promote_staged_xray(&staging_xray, &xray_dir) {
         // Promote failed: clean up the staging dir we no longer intend to keep,
         // then report Failed. Without this, repeated failed renames leak
@@ -365,30 +417,29 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
                     .join(format!("Xray-{suffix}.zip")),
             );
         }
+        // xray is down because of this replacement, so put the install back up
+        // rather than leaving the panel without a proxy. The job still failed.
+        if let Err(start_err) = start_xray(&state).await {
+            tracing::error!(error = %start_err, "xray did not come back after a failed promote");
+        }
         push_failed(&state, &job_id, format!("替换 xray 失败: {}", e)).await;
         return;
     }
 
-    if state
-        .supervisor_tx
-        .send(crate::xray::SupervisorCommand::RestartNow)
-        .await
-        .is_err()
-    {
-        push_failed(&state, &job_id, "supervisor gone".to_string()).await;
-        return;
-    }
-
-    // Give supervisor time to actually kill the old process and reach spawn.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // Succeeded.
-    {
-        let mut guard = state.update_jobs.lock().await;
-        if let Some(job) = guard.get_mut(&job_id) {
-            job.stage = JobStage::Succeeded;
-            job.message = "已替换并已重启".to_string();
-            job.finished_at = Some(now_unix());
+    // Report success only after the supervisor confirms the new binary is up:
+    // a replacement that exits at once (broken config, missing assets) has to
+    // surface as a failure instead of a green "已替换并已重启".
+    match start_xray(&state).await {
+        Ok(()) => {
+            let mut guard = state.update_jobs.lock().await;
+            if let Some(job) = guard.get_mut(&job_id) {
+                job.stage = JobStage::Succeeded;
+                job.message = "已替换并已重启".to_string();
+                job.finished_at = Some(now_unix());
+            }
+        }
+        Err(msg) => {
+            push_failed(&state, &job_id, format!("xray 已替换但未能启动: {msg}")).await;
         }
     }
 
@@ -416,6 +467,51 @@ async fn run_update(state: AppState, job_id: String, version: Option<String>) {
     .await;
 }
 
+/// How long the settings page waits for the supervisor to confirm that xray is
+/// down, and then that it is up again. The supervisor answers within
+/// milliseconds (the `Start` verdict costs one [`START_GRACE`]); the bound is
+/// there so a wedged supervisor fails the job instead of hanging it.
+const SUPERVISOR_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Stop xray and confirm the process is really gone, so its binary can be
+/// replaced with nothing executing it.
+async fn stop_xray_for_replace(state: &AppState) -> Result<(), String> {
+    let (ack_tx, ack_rx) = oneshot::channel();
+    if state
+        .supervisor_tx
+        .send(crate::xray::SupervisorCommand::StopForReplace { ack: ack_tx })
+        .await
+        .is_err()
+    {
+        return Err("supervisor gone".to_string());
+    }
+    match tokio::time::timeout(SUPERVISOR_ACK_TIMEOUT, ack_rx).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("supervisor dropped the stop request".to_string()),
+        Err(_) => Err("等待 xray 停止超时".to_string()),
+    }
+}
+
+/// Spawn xray from the binary now on disk and report whether it came up. The
+/// supervisor only answers `Ok` once the child has survived its start grace
+/// period, so an install that exit-codes immediately is reported as a failure.
+async fn start_xray(state: &AppState) -> Result<(), String> {
+    let (ack_tx, ack_rx) = oneshot::channel();
+    if state
+        .supervisor_tx
+        .send(crate::xray::SupervisorCommand::Start { ack: ack_tx })
+        .await
+        .is_err()
+    {
+        return Err("supervisor gone".to_string());
+    }
+    match tokio::time::timeout(SUPERVISOR_ACK_TIMEOUT, ack_rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("supervisor dropped the start request".to_string()),
+        Err(_) => Err("等待 xray 启动超时".to_string()),
+    }
+}
+
 /// Push a Failed status and return early.
 async fn push_failed(state: &AppState, job_id: &str, message: String) {
     let now = now_unix();
@@ -429,6 +525,10 @@ async fn push_failed(state: &AppState, job_id: &str, message: String) {
 }
 
 /// `GET /admin/settings/xray/status?job=<id>` — return job status as JSON.
+///
+/// The payload is the same [`JobRowView`] the table is rendered from, so a poll
+/// can refresh every field the page shows — stage label, message, and the
+/// download byte counters behind the progress bar.
 pub async fn update_status(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
@@ -439,24 +539,23 @@ pub async fn update_status(
         None => "<unknown>".to_string(),
     };
 
-    let status = {
+    let view = {
         let guard = state.update_jobs.lock().await;
-        guard.get(&job_id).cloned()
+        guard.get(&job_id).map(JobRowView::from_job)
     };
 
-    match status {
-        Some(s) => axum::Json(s).into_response(),
-        None => {
-            let synth = JobStatus {
-                id: job_id,
-                stage: JobStage::Failed,
-                message: "任务不存在或已清理".to_string(),
-                started_at: now_unix(),
-                finished_at: Some(now_unix()),
-                installed_tag: None,
-                error_message: None,
-            };
-            axum::Json(synth).into_response()
-        }
-    }
+    let view = view.unwrap_or_else(|| {
+        let synth = JobStatus {
+            id: job_id,
+            stage: JobStage::Failed,
+            message: "任务不存在或已清理".to_string(),
+            started_at: now_unix(),
+            finished_at: Some(now_unix()),
+            installed_tag: None,
+            error_message: None,
+            progress: None,
+        };
+        JobRowView::from_job(&synth)
+    });
+    axum::Json(view).into_response()
 }

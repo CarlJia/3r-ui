@@ -35,13 +35,15 @@ pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
     }
 
     let config = json!({
-        // access = "@stderr" 让每条连接请求走 stderr（面板 process.rs 已经
-        // 捕获），日志行由 src/xray/logs.rs 解析后落库 connection_logs。
-        // error 同样走 stderr，默认即如此，显式写出避免版本差异。
+        // 空字符串是 xray 唯一"写标准输出"的取值（`none` 才是关闭），面板
+        // process.rs 捕获子进程 stdout 后逐行消费：access 行由 src/xray/logs.rs
+        // 解析后落库 connection_logs，其余行写 $DATA_DIR/xray.log。
+        // 注意：xray 不认 `@stderr` 这类伪路径——它会被当作文件名，在 cwd
+        // 生成一个名为 `@stderr` 的杂散文件，而真正的管道什么都收不到。
         "log": {
             "loglevel": "warning",
-            "access": "@stderr",
-            "error": "@stderr",
+            "access": "",
+            "error": "",
         },
         "stats": {},
         "api": {

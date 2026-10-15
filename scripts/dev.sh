@@ -141,11 +141,15 @@ cleanup() {
 trap cleanup EXIT INT TERM HUP
 
 # Wait for the binary to bind (or fail to bind). A cold start downloads
-# xray-core (tens of MB) before the HTTP listener binds, so the budget has to
-# cover a real download rather than just a warm boot; print progress so the
-# first run does not look hung. `SECONDS` is a bash builtin, so the budget is
+# xray-core (~20 MB) before the HTTP listener binds, so the budget has to cover
+# a real download rather than just a warm boot. It is deliberately larger than
+# the installer's own ceiling for that transfer (`DOWNLOAD_TIMEOUT` in
+# src/xray/installer.rs, 25 minutes): the installer has to be the one that gives
+# up on a stalled download, so a slow-but-healthy transfer is never cut off
+# here. Print progress so a first run does not look hung — silence means a slow
+# link, not a stuck panel. `SECONDS` is a bash builtin, so the budget is
 # wall-clock rather than a tick count.
-READY_BUDGET_SECS=180
+READY_BUDGET_SECS=1620
 SECONDS=0
 last_progress=0
 while [ "$SECONDS" -lt "$READY_BUDGET_SECS" ]; do
@@ -155,13 +159,25 @@ while [ "$SECONDS" -lt "$READY_BUDGET_SECS" ]; do
         tail -n 40 "$LOG" >&2
         exit 1
     fi
-    if [ $((SECONDS - last_progress)) -ge 5 ]; then
+    progress_every=5
+    [ "$SECONDS" -ge 60 ] && progress_every=30
+    if [ $((SECONDS - last_progress)) -ge "$progress_every" ]; then
         last_progress=$SECONDS
-        echo "[dev] still starting after ${SECONDS}s (first run may be downloading xray-core)"
+        echo "[dev] still starting after ${SECONDS}s (a first run downloads xray-core, see $LOG)"
     fi
     sleep 0.5
 done
 grep -q "3r-ui ready" "$LOG" || { echo "[dev] panel not ready after ${READY_BUDGET_SECS}s" >&2; tail -n 40 "$LOG" >&2; exit 1; }
+
+# The panel binds its HTTP listener even when xray-core never arrived (see
+# `ensure_xray_binary` in src/lib.rs), so "ready" does not mean the proxy is
+# usable. Say which of the two the user got instead of leaving it to the
+# settings page. The placeholder base is the deliberate no-download case.
+if [ "${XRAY_DOWNLOAD_BASE:-$PLACEHOLDER_BASE}" != "$PLACEHOLDER_BASE" ] \
+    && [ ! -f "$DATA_DIR/xray/xray" ]; then
+    echo "[dev] WARNING: the panel is up, but xray-core was not installed;" >&2
+    echo "[dev]          look for the download error in $LOG" >&2
+fi
 
 # ---- 5. Report ---------------------------------------------------------
 
