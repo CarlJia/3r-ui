@@ -1,0 +1,34 @@
+// Vendored (trimmed) from
+// https://github.com/XTLS/Xray-core/blob/main/app/proxyman/command/command.proto
+//
+// Only what the panel drives is kept: `AlterInbound` carrying an add/remove
+// user operation, which is xray's one live config edit. Message names, field
+// numbers and the service name are upstream's — xray resolves the operation by
+// the name in `TypedMessage.type`. Pin a known commit in your upgrade notes
+// when bumping xray-core.
+syntax = "proto3";
+
+package xray.app.proxyman.command;
+option go_package = "github.com/xtls/xray-core/app/proxyman/command";
+
+import "common/protocol/user.proto";
+import "common/serial/typed_message.proto";
+
+message AddUserOperation {
+  xray.common.protocol.User user = 1;
+}
+
+message RemoveUserOperation {
+  string email = 1;
+}
+
+message AlterInboundRequest {
+  string tag = 1;
+  xray.common.serial.TypedMessage operation = 2;
+}
+
+message AlterInboundResponse {}
+
+service HandlerService {
+  rpc AlterInbound(AlterInboundRequest) returns (AlterInboundResponse) {}
+}

@@ -1,0 +1,20 @@
+// Vendored (trimmed) from
+// https://github.com/XTLS/Xray-core/blob/main/proxy/vless/account.proto
+//
+// Only the fields the panel encodes are kept. Field numbers and the message
+// name are upstream's: xray looks the packed account up by the name in
+// `TypedMessage.type` and reads it by field number, so both have to match.
+// Pin a known commit in your upgrade notes when bumping xray-core.
+syntax = "proto3";
+
+package xray.proxy.vless;
+option go_package = "github.com/xtls/xray-core/proxy/vless";
+
+message Account {
+  // ID of the account, in the form of a UUID, e.g., "66ad4540-b58c-4ad2-9926-ea63445a9b57".
+  string id = 1;
+  // Flow settings. May be "xtls-rprx-vision".
+  string flow = 2;
+
+  string encryption = 3;
+}

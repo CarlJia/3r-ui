@@ -144,6 +144,17 @@ fn rendered_config(h: &Harness) -> serde_json::Value {
     serde_json::from_str(&raw).expect("config.json should be valid JSON")
 }
 
+/// The inbounds the panel renders from the database. The rendered config also
+/// carries xray's gRPC API inbound, so "how many inbounds" always means this.
+fn user_inbounds(cfg: &serde_json::Value) -> Vec<&serde_json::Value> {
+    cfg["inbounds"]
+        .as_array()
+        .expect("inbounds array")
+        .iter()
+        .filter(|inbound| inbound["tag"] != "api")
+        .collect()
+}
+
 #[tokio::test]
 async fn inbound_page_requires_a_session() {
     let h = boot().await;
@@ -325,7 +336,7 @@ async fn config_json_is_owner_only() {
 }
 
 #[tokio::test]
-async fn stats_api_is_bound_to_loopback() {
+async fn stats_api_is_reachable_at_the_stats_client_address() {
     let h = boot().await;
     let (session, csrf) = login(&h).await;
     post(
@@ -338,11 +349,42 @@ async fn stats_api_is_bound_to_loopback() {
     .await;
 
     let cfg = rendered_config(&h);
-    let listen = cfg["stats api"]["listen"].as_str().unwrap();
+    // xray only opens its gRPC API on an inbound: `api.tag` names it. Without
+    // this entry the config still parses, and every stats poll fails.
+    assert_eq!(cfg["api"]["tag"], "api");
+    let api = cfg["inbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|inbound| inbound["tag"] == "api")
+        .expect("the rendered config must carry the API inbound");
+    assert_eq!(api["protocol"], "dokodemo-door");
+    let listen = api["listen"].as_str().unwrap();
     assert!(
-        listen.starts_with("127.0.0.1:"),
-        "stats api listen = {listen}"
+        listen.starts_with("127.0.0.1"),
+        "the API is unauthenticated, so it must stay on loopback; got {listen}"
     );
+    assert_eq!(
+        format!("{listen}:{}", api["port"]),
+        three_r_ui::xray::config::API_ADDR,
+        "the API inbound must listen where the stats client dials"
+    );
+    // …and it has to be routed to the API outbound. `api.tag` names the
+    // synthetic outbound the handlers live behind, so this rule is what makes
+    // the port an API instead of a dokodemo-door proxying into itself.
+    assert_eq!(
+        cfg["routing"]["rules"][0]["inboundTag"][0], "api",
+        "the API rule must be first, ahead of the catch-all"
+    );
+    assert_eq!(cfg["routing"]["rules"][0]["outboundTag"], cfg["api"]["tag"]);
+    // The panel's stats client reads `user>>>` counters, and xray creates
+    // those only when the policy level turns them on; a missing flag shows up
+    // as permanent silence from QueryStats rather than as an error.
+    assert_eq!(
+        cfg["policy"]["levels"]["0"]["statsUserUplink"], true,
+        "per-user traffic counters must be enabled or quota can never fire"
+    );
+    assert_eq!(cfg["policy"]["levels"]["0"]["statsUserDownlink"], true);
 }
 
 #[tokio::test]
@@ -437,13 +479,13 @@ async fn delete_removes_the_inbound_from_the_rendered_config() {
         "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
     )
     .await;
-    assert_eq!(rendered_config(&h)["inbounds"].as_array().unwrap().len(), 1);
+    assert_eq!(user_inbounds(&rendered_config(&h)).len(), 1);
 
     post(&h, "/admin/inbound/delete", &session, &csrf, "").await;
 
     let cfg = rendered_config(&h);
     assert_eq!(
-        cfg["inbounds"].as_array().unwrap().len(),
+        user_inbounds(&cfg).len(),
         0,
         "deleted inbound must not appear in the config"
     );

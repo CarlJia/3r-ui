@@ -18,9 +18,6 @@ pub enum AppError {
     #[error("could not acquire lock at {0}: {1}")]
     Lock(String, String),
 
-    #[error("not implemented: {0}")]
-    NotImplemented(String),
-
     #[error("xray error: {0}")]
     Xray(String),
 

@@ -6,21 +6,26 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use prost::Message;
 use tempfile::tempdir;
+use three_r_ui::xray::api::proto::xray::app::proxyman::command::{
+    handler_service_server::{HandlerService, HandlerServiceServer},
+    AddUserOperation, AlterInboundRequest, AlterInboundResponse, RemoveUserOperation,
+};
 use three_r_ui::xray::{SupervisorCommand, XraySupervisor};
 use tokio::sync::{mpsc, oneshot};
+use tonic::{Request, Response, Status};
 
-/// A stub xray that stays alive until signalled. Honors SIGTERM (exit 0),
-/// SIGUSR1 (prints a marker and keeps running), and SIGINT.
+/// A stub xray that stays alive until signalled. Honors SIGTERM (exit 0) and
+/// SIGINT (exit 0).
 fn write_stub_alive(path: &Path) {
     // The shell itself must stay the process the supervisor knows: `exec sleep`
-    // would replace it with a program that has no SIGUSR1 handler, so the
-    // reload signal would kill it instead of being observed.
+    // would replace it with a program that has no signal handlers.
     let body = r#"#!/bin/sh
 trap 'echo "stub: TERM"; exit 0' TERM
-trap 'echo "stub: USR1"' USR1
 trap 'echo "stub: INT"; exit 0' INT
 echo "stub started pid=$$"
 while :; do sleep 0.2; done
@@ -268,55 +273,220 @@ async fn stale_pid_file_from_previous_run_is_reaped() {
     let _ = tokio::time::timeout(Duration::from_secs(15), handle).await;
 }
 
+/// A stub HandlerService that records every AlterInbound it is asked to
+/// perform, so a test can see what the supervisor decided to do to a running
+/// xray without needing xray itself.
+#[derive(Clone, Default)]
+struct RecordingHandler {
+    calls: Arc<Mutex<Vec<AlterInboundRequest>>>,
+}
+
+#[tonic::async_trait]
+impl HandlerService for RecordingHandler {
+    async fn alter_inbound(
+        &self,
+        request: Request<AlterInboundRequest>,
+    ) -> Result<Response<AlterInboundResponse>, Status> {
+        self.calls.lock().unwrap().push(request.into_inner());
+        Ok(Response::new(AlterInboundResponse {}))
+    }
+}
+
+/// Serve `RecordingHandler` on an ephemeral loopback port and return its address
+/// plus the recorded calls.
+async fn start_mock_api() -> (String, Arc<Mutex<Vec<AlterInboundRequest>>>) {
+    let handler = RecordingHandler::default();
+    let calls = handler.calls.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+        .expect("tcp incoming");
+    tokio::spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(HandlerServiceServer::new(handler))
+            .serve_with_incoming(incoming)
+            .await;
+    });
+    (addr.to_string(), calls)
+}
+
+/// A rendered config with one inbound carrying `clients`.
+fn config_with_users(clients: &[(&str, &str)]) -> serde_json::Value {
+    serde_json::json!({
+        "inbounds": [{
+            "tag": "inbound-1",
+            "listen": "0.0.0.0",
+            "port": 8443,
+            "protocol": "vless",
+            "settings": {
+                "clients": clients
+                    .iter()
+                    .map(|(uuid, email)| serde_json::json!({"id": uuid, "email": email, "level": 0}))
+                    .collect::<Vec<_>>(),
+                "decryption": "none",
+            },
+        }],
+    })
+}
+
+async fn wait_for_pid_file(pid_file: &Path) -> i32 {
+    for _ in 0..40 {
+        if let Some(pid) = read_pid(pid_file) {
+            if process_alive(pid) {
+                return pid;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("supervisor should have spawned a live child");
+}
+
+async fn wait_for_calls(
+    calls: &Arc<Mutex<Vec<AlterInboundRequest>>>,
+    expected: usize,
+) -> Vec<AlterInboundRequest> {
+    for _ in 0..50 {
+        {
+            let calls = calls.lock().unwrap();
+            if calls.len() >= expected {
+                return calls.clone();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let calls = calls.lock().unwrap().clone();
+    panic!(
+        "expected {expected} AlterInbound calls, saw {}",
+        calls.len()
+    );
+}
+
+/// A user-list edit is the one config change xray can take at runtime, and it
+/// must not restart the child: a restart drops every live connection, and the
+/// panel reloads on each client edit and on every expired-client sweep.
 #[tokio::test]
-async fn reload_signal_is_delivered_to_the_child() {
+async fn user_list_change_is_applied_live_without_restarting() {
     let tmp = tempdir().unwrap();
     let (xray_bin, config_path) = setup(&tmp);
     write_stub_alive(&xray_bin);
+    std::fs::write(&config_path, config_with_users(&[]).to_string()).unwrap();
 
-    let supervisor = XraySupervisor::new(xray_bin, config_path, tmp.path().to_path_buf(), None);
+    let (api_addr, calls) = start_mock_api().await;
+    let supervisor = XraySupervisor::new(
+        xray_bin,
+        config_path.clone(),
+        tmp.path().to_path_buf(),
+        None,
+    )
+    .with_api_addr(api_addr);
     let (tx, rx) = mpsc::channel(4);
     let handle = tokio::spawn(supervisor.run(rx));
 
-    // Wait for the child to be up so the pid file exists.
     let pid_file = tmp.path().join("xray.pid");
-    let pid_before = wait_for_live_pid(&pid_file).await;
-    let log_file = tmp.path().join("xray.log");
+    let pid_before = wait_for_pid_file(&pid_file).await;
 
-    // Wait for the stub to announce itself. It installs its SIGUSR1 trap before
-    // printing, so this is the point from which reloading it is meaningful: a
-    // signal that arrives earlier just kills the shell, which is the same
-    // hazard a real xray has before it installs its own handler.
-    assert!(
-        wait_for_log_line(&log_file, "stub started").await,
-        "stub must announce itself; xray.log held {:?}",
-        std::fs::read_to_string(&log_file).unwrap_or_default()
-    );
-
-    // Reload must not kill the child — it's a config reload, not a restart.
+    // Add a client, exactly as the panel does: render, then ask for a reload.
+    std::fs::write(
+        &config_path,
+        config_with_users(&[("11111111-1111-1111-1111-111111111111", "user-1")]).to_string(),
+    )
+    .unwrap();
     tx.send(SupervisorCommand::Reload)
         .await
         .expect("send reload");
 
-    // The child's answer ("stub: USR1") is proof the signal was delivered, and
-    // it lands in xray.log on the way through the output pipeline.
-    assert!(
-        wait_for_log_line(&log_file, "stub: USR1").await,
-        "reload signal must reach the child; xray.log held {:?}",
-        std::fs::read_to_string(&log_file).unwrap_or_default()
+    let recorded = wait_for_calls(&calls, 1).await;
+    let operation = recorded[0].operation.clone().expect("operation");
+    assert_eq!(recorded[0].tag, "inbound-1");
+    assert_eq!(
+        operation.r#type,
+        "xray.app.proxyman.command.AddUserOperation"
+    );
+    let add = AddUserOperation::decode(operation.value.as_slice()).unwrap();
+    let user = add.user.expect("user");
+    assert_eq!(user.email, "user-1");
+
+    assert!(process_alive(pid_before), "a live edit must not kill xray");
+    assert_eq!(
+        read_pid(&pid_file),
+        Some(pid_before),
+        "a user-list edit must be applied in place, not by restarting xray"
     );
 
-    let pid = read_pid(&pid_file).expect("pid file should still exist");
-    assert!(process_alive(pid), "reload must not terminate xray");
+    // …and the sweep that disables a client has to reach a running xray too.
+    std::fs::write(&config_path, config_with_users(&[]).to_string()).unwrap();
+    tx.send(SupervisorCommand::Reload)
+        .await
+        .expect("send reload");
+
+    let recorded = wait_for_calls(&calls, 2).await;
+    let operation = recorded[1].operation.clone().expect("operation");
     assert_eq!(
-        pid, pid_before,
-        "reload must be applied in place, not by restarting xray: a restart \
-         drops every live connection, and the panel reloads on each inbound or \
-         client edit"
+        operation.r#type,
+        "xray.app.proxyman.command.RemoveUserOperation"
+    );
+    let remove = RemoveUserOperation::decode(operation.value.as_slice()).unwrap();
+    assert_eq!(remove.email, "user-1");
+    assert_eq!(read_pid(&pid_file), Some(pid_before));
+
+    let _ = tx.send(SupervisorCommand::Stop).await;
+    let _ = tokio::time::timeout(Duration::from_secs(15), handle).await;
+}
+
+/// Anything xray cannot take at runtime — here a REALITY key rotation, which
+/// shows up as a changed port — has to be applied by respawning the child.
+#[tokio::test]
+async fn structural_config_change_restarts_the_child() {
+    let tmp = tempdir().unwrap();
+    let (xray_bin, config_path) = setup(&tmp);
+    write_stub_alive(&xray_bin);
+    std::fs::write(&config_path, config_with_users(&[]).to_string()).unwrap();
+
+    // A mock that must never be called: no live edit can express this change.
+    let (api_addr, calls) = start_mock_api().await;
+    let supervisor = XraySupervisor::new(
+        xray_bin,
+        config_path.clone(),
+        tmp.path().to_path_buf(),
+        None,
+    )
+    .with_api_addr(api_addr);
+    let (tx, rx) = mpsc::channel(4);
+    let handle = tokio::spawn(supervisor.run(rx));
+
+    let pid_file = tmp.path().join("xray.pid");
+    let pid_before = wait_for_pid_file(&pid_file).await;
+
+    let mut config = config_with_users(&[]);
+    config["inbounds"][0]["port"] = serde_json::json!(9443);
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    tx.send(SupervisorCommand::Reload)
+        .await
+        .expect("send reload");
+
+    let mut restarted = None;
+    for _ in 0..50 {
+        match read_pid(&pid_file) {
+            Some(pid) if pid != pid_before && process_alive(pid) => {
+                restarted = Some(pid);
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    let restarted = restarted.expect("a structural change must respawn xray");
+    assert!(
+        !process_alive(pid_before),
+        "the old child should be gone after the restart"
+    );
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "a structural change must not be attempted over the live-edit API"
     );
 
     let _ = tx.send(SupervisorCommand::Stop).await;
     let _ = tokio::time::timeout(Duration::from_secs(15), handle).await;
+    let _ = restarted;
 }
 
 #[tokio::test]
@@ -361,20 +531,6 @@ async fn wait_until_dead(pid: i32) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("pid {pid} is still alive");
-}
-
-/// Block until `needle` appears in `log_file`, or give up after ~5s.
-async fn wait_for_log_line(log_file: &Path, needle: &str) -> bool {
-    for _ in 0..50 {
-        if std::fs::read_to_string(log_file)
-            .unwrap_or_default()
-            .contains(needle)
-        {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    false
 }
 
 /// A stub xray that prints on stdout (like the real xray banner) and touches

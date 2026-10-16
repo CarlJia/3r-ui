@@ -2,7 +2,8 @@
 //!
 //! SQLite is the single source of truth. Whenever an inbound or client
 //! changes, [`render`] rebuilds `config.json` from the database and the caller
-//! signals xray to reload (SIGUSR1 — see [`crate::xray::process`]).
+//! asks the supervisor to apply it — live when only the user list moved, by
+//! restarting xray otherwise (see [`crate::xray::process`]).
 //!
 //! The rendered file contains the REALITY private key, so it is written with
 //! mode 0600.
@@ -16,23 +17,38 @@ use crate::error::{AppError, AppResult};
 
 use crate::db::models::{Client, Inbound};
 
-/// Where xray listens for the StatsService gRPC API. Bound to loopback: the
-/// API is unauthenticated, so exposing it would leak per-user traffic to
-/// anyone who can reach the port.
-pub const STATS_ADDR: &str = "127.0.0.1:10085";
+/// Where xray listens for its gRPC API (traffic counters, live user edits).
+/// Bound to loopback: the API is unauthenticated, so exposing it would let
+/// anyone who can reach the port read per-user traffic and edit users.
+pub const API_ADDR: &str = "127.0.0.1:10085";
+
+/// Tag of the inbound the gRPC API attaches to. `api.tag` names it, and API
+/// calls target it.
+pub const API_TAG: &str = "api";
 
 /// Re-read every active inbound and its active clients, and write
 /// `${data_dir}/xray/config.json` at mode 0600.
 ///
-/// Returns the number of active inbounds written, so callers can log or test.
+/// Returns the number of *user* inbounds written (the API inbound is not
+/// counted), so callers can log or test.
 pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
     let inbounds = active_inbounds(pool).await?;
 
-    let mut inbound_values: Vec<Value> = Vec::with_capacity(inbounds.len());
+    let mut inbound_values: Vec<Value> = Vec::with_capacity(inbounds.len() + 1);
     for inbound in &inbounds {
         let clients = active_clients(pool, inbound.id).await?;
         inbound_values.push(render_inbound(inbound, &clients));
     }
+    // Last, so `inbounds[0]` stays the user's inbound for readers of the file.
+    inbound_values.push(api_inbound()?);
+
+    // The API rule comes first: `api.tag` names the synthetic *outbound* the
+    // API handlers hide behind, so an API call only reaches them when this
+    // inbound is routed there. Behind the catch-all below it would be proxied
+    // as ordinary traffic — into a loop, since the API inbound points at itself.
+    let mut rules = vec![api_routing_rule()];
+    rules.push(json!({ "type": "field", "outboundTag": "blocked", "domain": ["geosite:category-ads-all"] }));
+    rules.push(json!({ "type": "field", "outboundTag": "direct", "network": "tcp,udp" }));
 
     let config = json!({
         // 空字符串是 xray 唯一"写标准输出"的取值（`none` 才是关闭），面板
@@ -47,27 +63,20 @@ pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
         },
         "stats": {},
         "api": {
-            "services": ["StatsService"],
-            "tag": "api",
+            // HandlerService is what applies a user-list change to the running
+            // xray without a restart (see `xray::api`); StatsService is the
+            // traffic counters.
+            "services": ["HandlerService", "StatsService"],
+            "tag": API_TAG,
         },
-        "stats api": {
-            "tag": "api",
-            "listen": STATS_ADDR,
-        },
-        "policy": {
-            "levels": { "0": { "handshake": 4, "connIdle": 300, "uplinkOnly": 1, "downlinkOnly": 1 } },
-            "system": { "statsOutboundUplink": true, "statsOutboundDownlink": true },
-        },
+        "policy": policy(),
         "inbounds": inbound_values,
         "outbounds": [
             { "tag": "direct", "protocol": "freedom", "settings": {} },
             { "tag": "blocked", "protocol": "blackhole", "settings": {} },
         ],
         "routing": {
-            "rules": [
-                { "type": "field", "outboundTag": "blocked", "domain": ["geosite:category-ads-all"] },
-                { "type": "field", "outboundTag": "direct", "network": "tcp,udp" },
-            ],
+            "rules": rules,
             "domainStrategy": "IPIfNonMatch",
         },
     });
@@ -121,6 +130,64 @@ pub async fn active_clients(pool: &SqlitePool, inbound_id: i64) -> AppResult<Vec
     .map_err(AppError::Database)
 }
 
+/// The inbound xray serves its gRPC API on.
+///
+/// xray has no standalone API listener: the API attaches to an inbound tagged
+/// [`API_TAG`], whose traffic [`render`] routes to the synthetic outbound of
+/// the same name. Miss either half — the inbound or the routing rule — and xray
+/// accepts the config but the port is dead: nothing listens, or connections are
+/// proxied as ordinary traffic. In xray's schema `listen` is a bare host and
+/// the port is a sibling field, so the shared [`API_ADDR`] is split here — the
+/// panel's client dials the same address.
+fn api_inbound() -> AppResult<Value> {
+    let (host, port) = API_ADDR
+        .rsplit_once(':')
+        .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
+        .ok_or_else(|| AppError::Xray(format!("API_ADDR is not host:port: {API_ADDR}")))?;
+
+    Ok(json!({
+        "tag": API_TAG,
+        "listen": host,
+        "port": port,
+        "protocol": "dokodemo-door",
+        "settings": { "address": host },
+    }))
+}
+
+/// xray's traffic policy.
+///
+/// `statsUserUplink`/`statsUserDownlink` are what make xray create the per-user
+/// counters the panel polls (`user>>><email>>>traffic>>><direction>`, see
+/// [`crate::xray::stats`]). They default to false, and without them the counters
+/// never exist at all: `QueryStats` comes back empty for every client,
+/// `traffic_snapshots` stays empty and quota enforcement has nothing to compare
+/// against. `statsOutbound*` only covers outbound counters, a different
+/// namespace.
+fn policy() -> Value {
+    json!({
+        "levels": {
+            "0": {
+                "handshake": 4,
+                "connIdle": 300,
+                "uplinkOnly": 1,
+                "downlinkOnly": 1,
+                "statsUserUplink": true,
+                "statsUserDownlink": true,
+            }
+        },
+        "system": { "statsOutboundUplink": true, "statsOutboundDownlink": true },
+    })
+}
+
+/// The routing rule that hands [`api_inbound`]'s traffic to xray's API handlers.
+///
+/// Without it the API inbound is just a dokodemo-door pointing at itself: the
+/// port accepts connections, which then loop back as proxy traffic, and every
+/// call hangs until it times out.
+fn api_routing_rule() -> Value {
+    json!({ "type": "field", "inboundTag": [API_TAG], "outboundTag": API_TAG })
+}
+
 /// Render one VLESS + REALITY + XHTTP inbound.
 ///
 /// The client `email` field is load-bearing: xray keys its per-user traffic
@@ -150,7 +217,15 @@ fn render_inbound(inbound: &Inbound, clients: &[Client]) -> Value {
         "streamSettings": {
             "network": "xhttp",
             "xhttpSettings": {
-                "path": "/xhttp",
+                // Must be the path a client actually requests. A client posts
+                // its own `path` with a trailing slash appended when it has
+                // none, and the server matches exactly — so `/xhttp` here
+                // never matches the `/xhttp/` a client sends, and the inbound
+                // accepts the connection only to drop it (no access-log line,
+                // client hangs). We keep the default a client falls back to
+                // when its share link carries no `path` (see src/share/vless.rs,
+                // which omits it), which makes the two halves agree.
+                "path": "/",
                 "mode": "auto",
             },
             "security": "reality",
@@ -211,6 +286,10 @@ mod tests {
         let ss = &v["streamSettings"];
         assert_eq!(ss["network"], "xhttp");
         assert_eq!(ss["security"], "reality");
+        // The client's share link (src/share/vless.rs) carries no `path`, so a
+        // client requests the default `/`; a server path of `/xhttp` would
+        // never match it and the tunnel would silently drop every connection.
+        assert_eq!(ss["xhttpSettings"]["path"], "/");
         assert_eq!(ss["realitySettings"]["dest"], "www.microsoft.com:443");
         assert_eq!(ss["realitySettings"]["serverNames"][0], "www.microsoft.com");
         assert_eq!(ss["realitySettings"]["shortIds"][0], "abcd");
@@ -234,8 +313,32 @@ mod tests {
         assert_eq!(v["settings"]["clients"].as_array().unwrap().len(), 0);
     }
 
+    /// Without these flags xray never creates the `user>>>` counters the stats
+    /// poll reads, so every client would silently report zero traffic forever.
     #[test]
-    fn stats_api_is_bound_to_loopback() {
-        assert!(STATS_ADDR.starts_with("127.0.0.1:"));
+    fn policy_enables_per_user_traffic_counters() {
+        let p = policy();
+        assert_eq!(p["levels"]["0"]["statsUserUplink"], true);
+        assert_eq!(p["levels"]["0"]["statsUserDownlink"], true);
+    }
+
+    #[test]
+    fn api_routing_rule_sends_api_traffic_to_the_api_outbound() {
+        let rule = api_routing_rule();
+        assert_eq!(rule["inboundTag"][0], API_TAG);
+        assert_eq!(rule["outboundTag"], API_TAG);
+    }
+
+    #[test]
+    fn api_inbound_listens_where_the_api_client_dials() {
+        let v = api_inbound().unwrap();
+        assert_eq!(v["tag"], API_TAG);
+        assert_eq!(v["protocol"], "dokodemo-door");
+        assert_eq!(v["settings"]["address"], "127.0.0.1");
+        assert_eq!(
+            format!("{}:{}", v["listen"].as_str().unwrap(), v["port"]),
+            API_ADDR,
+            "the API inbound must listen where the API clients connect"
+        );
     }
 }

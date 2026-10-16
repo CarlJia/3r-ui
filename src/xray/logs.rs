@@ -10,6 +10,9 @@
 //!   `2026/01/15 10:23:45 from 1.2.3.4:56789 accepted tcp:example.com:443 [inbound-1 -> direct] abc-uuid`
 //!   `2026/01/15 10:23:45 from 1.2.3.4:56789 rejected tcp:example.com:443 [user not found] abc-uuid`
 //! 解析失败或字段缺失时，对应列落 NULL；原始行始终保存在 `raw_message`。
+//!
+//! 面板自己的 gRPC API 调用（`[api -> api]`）形状与访问日志一样，但它们不是
+//! 客户端连接——面板每 10s 轮询一次流量就会产生一行——所以在这里直接丢弃。
 
 use std::time::Duration;
 
@@ -18,6 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::crypto::session::now_unix;
 use crate::error::AppResult;
+use crate::xray::config::API_TAG;
 
 /// 30 天保留窗口（秒）。清理由 [`prune_loop`] 周期执行。
 const RETENTION_SECS: i64 = 30 * 24 * 3600;
@@ -80,6 +84,14 @@ pub fn parse_access_line(line: &str) -> Option<ParsedAccess> {
     // `accepted` / `rejected` 关键字定位。用单词边界（前后是空格或行首尾）
     // 避免误匹配 dest 中包含该子串的情况。
     let (status, after_status) = find_status_keyword(line)?;
+
+    // The panel's own gRPC API calls (`[api -> api]`, one per stats poll) have
+    // the shape of an access line but are not client traffic — keeping them
+    // would fill the log page with internal traffic every 10s.
+    if detour_inbound_tag(after_status) == Some(API_TAG) {
+        return None;
+    }
+
     let logged_at = parse_xray_timestamp(line);
 
     // src: `from <ip:port>` 的地址。`from` 通常紧跟时间戳之后。
@@ -109,14 +121,22 @@ pub fn parse_access_line(line: &str) -> Option<ParsedAccess> {
         })
         .filter(|s| !s.is_empty());
 
-    // uuid: 优先 `email:<uuid>` 标记；否则取行尾 token（xray 的 access log
-    // 把 email 放在行尾）。
-    let uuid = line
-        .split_whitespace()
-        .find_map(|t| t.strip_prefix("email:").map(|s| s.to_string()))
+    // uuid: 优先 `email: <uuid>` 标记（xray 26 在冒号后带空格；旧版不带），
+    // 否则取行尾 token（xray 的 access log 把 email 放在行尾）。
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let uuid = tokens
+        .iter()
+        .enumerate()
+        .find_map(|(i, t)| match t.strip_prefix("email:") {
+            // `email:` 后面的 token 才是 uuid；不处理这一层会让 `Some("")`
+            // 短路掉行尾回退，uuid 列永远是空。
+            Some("") => tokens.get(i + 1).map(|s| s.to_string()),
+            Some(rest) => Some(rest.to_string()),
+            None => None,
+        })
         .or_else(|| {
-            line.split_whitespace()
-                .next_back()
+            tokens
+                .last()
                 .filter(|t| looks_like_uuid(t))
                 .map(|t| t.to_string())
         });
@@ -165,6 +185,19 @@ fn find_status_keyword(line: &str) -> Option<(&str, &str)> {
         }
     }
     None
+}
+
+/// 取 `[inbound -> outbound]` 跳转标记里的 inbound 标签（没有标记时返回 `None`）。
+/// 面板用它识别自己发起的 API 调用（`[api -> api]`）。
+fn detour_inbound_tag(after_status: &str) -> Option<&str> {
+    after_status
+        .split('[')
+        .nth(1)?
+        .split(']')
+        .next()?
+        .split("->")
+        .next()
+        .map(str::trim)
 }
 
 /// 宽松的 UUID 形状判断：8-4-4-4-12 的 hex 段。xray 把 email 写在行尾；
@@ -315,11 +348,38 @@ mod tests {
         assert_eq!(p.uuid.as_deref(), Some("abc-uuid"));
     }
 
+    /// xray 26 把 email 写成 `email: <uuid>`（冒号后带空格），行尾不再重复
+    /// uuid。旧解析只认 `email:<uuid>`，会让 uuid 列永远是空。
+    #[test]
+    fn parses_space_separated_email_uuid() {
+        let line = "2026/10/16 03:16:57.698287 from 127.0.0.1:54213 accepted tcp:127.0.0.1:19031 \
+                    [inbound-1 -> direct] email: 73f8d24d-4a03-4bdb-a723-001430442988";
+        let p = parse_access_line(line).expect("access line");
+        assert_eq!(
+            p.uuid.as_deref(),
+            Some("73f8d24d-4a03-4bdb-a723-001430442988")
+        );
+        assert_eq!(p.dest.as_deref(), Some("127.0.0.1:19031"));
+    }
+
     #[test]
     fn drops_error_log_lines() {
         // xray 内部 error/warning 行没有 accepted/rejected 关键字。
         assert!(parse_access_line("2026/01/15 10:23:45 [Warning] failed to read config").is_none());
         assert!(parse_access_line("Xray 1.8.4 started").is_none());
+    }
+
+    #[test]
+    fn drops_the_panels_own_api_calls() {
+        // 面板每 10s 轮询一次 stats，xray 会为这次连接写一行 access log；
+        // 它不是客户端连接，不能进 connection_logs。
+        let line = "2026/10/16 03:06:10.322824 from 127.0.0.1:50064 accepted tcp:127.0.0.1:10085 \
+                    [api -> api]";
+        assert!(parse_access_line(line).is_none());
+        // 同一形状的用户连接仍然照收。
+        let user = "2026/10/16 03:06:10.322824 from 127.0.0.1:50064 accepted tcp:1.2.3.4:443 \
+                    [inbound-1 -> direct] 01234567-89ab-cdef-0123-456789abcdef";
+        assert!(parse_access_line(user).is_some());
     }
 
     #[test]

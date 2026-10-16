@@ -17,7 +17,10 @@
 //!
 //! xray-core restarts reset its counters to 0, which surfaces as a negative
 //! delta; we clamp those to 0 so a counter reset never decreases the panel's
-//! cumulative total.
+//! cumulative total. A client the panel has never recorded likewise counts from
+//! zero rather than from its first observed value: xray registers a user's
+//! counters on that user's first packet, so the first value seen already
+//! contains real traffic.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,15 +34,13 @@ use tonic::Request;
 use crate::db::models::Client;
 use crate::error::{AppError, AppResult};
 use crate::quota;
+use crate::xray::config::API_ADDR;
 
-pub mod proto {
-    tonic::include_proto!("xray.app.stats.command");
-}
-
+/// The generated StatsService stubs live in the shared proto tree (see
+/// [`crate::xray::api`]), because the same xray API also carries the live
+/// user-edit calls.
+use crate::xray::api::proto::xray::app::stats::command as proto;
 use proto::stats_service_client::StatsServiceClient;
-
-/// xray's gRPC StatsService address. Mirrors [`crate::xray::config::STATS_ADDR`].
-pub const STATS_ADDR: &str = "127.0.0.1:10085";
 
 /// xray names its per-user counters `user>>><email>>>traffic>>><direction>`.
 const USER_PREFIX: &str = "user>>>";
@@ -145,6 +146,22 @@ async fn active_clients_by_uuid(pool: &SqlitePool) -> AppResult<HashMap<String, 
     Ok(rows.into_iter().map(|(id, uuid)| (uuid, id)).collect())
 }
 
+/// Turn raw xray counters into a delta against the last observed values.
+///
+/// `prev_xray` is `None` only for a client the panel has never accounted for:
+/// [`Snapshot`] is seeded from `traffic_snapshots` at startup, so anything
+/// already recorded comes back as `Some`. That case must count from zero —
+/// xray registers a user's counters on that user's first packet, so the first
+/// value seen already contains real traffic, and treating it as a baseline
+/// silently discards the client's first bursts. A counter that went backwards
+/// (xray restarted) is clamped so the cumulative total never regresses.
+fn delta(prev_xray: Option<(i64, i64)>, xray: (i64, i64)) -> (i64, i64) {
+    match prev_xray {
+        Some((prev_u, prev_d)) => ((xray.0 - prev_u).max(0), (xray.1 - prev_d).max(0)),
+        None => (xray.0.max(0), xray.1.max(0)),
+    }
+}
+
 /// One round of polling: query xray, write a snapshot row per active client,
 /// then ask quota enforcement to disable anyone who exceeded their cap.
 pub async fn poll_once(
@@ -168,19 +185,7 @@ pub async fn poll_once(
     let now = crate::crypto::session::now_unix();
     let mut rows_written = 0u64;
     for (client_id, (xray_u, xray_d)) in by_client {
-        let (prev_u, prev_d) = match snapshot.last(client_id) {
-            Some(v) => v,
-            None => {
-                // First poll since (re)start — establish baseline, write nothing.
-                snapshot.remember(client_id, xray_u, xray_d);
-                continue;
-            }
-        };
-
-        // xray counter went backwards (xray restart, stats reset, etc.).
-        // Clamp to 0 rather than letting the cumulative total regress.
-        let delta_u = (xray_u - prev_u).max(0);
-        let delta_d = (xray_d - prev_d).max(0);
+        let (delta_u, delta_d) = delta(snapshot.last(client_id), (xray_u, xray_d));
 
         let baseline: (i64, i64) = sqlx::query_as(
             "SELECT uplink, downlink FROM traffic_snapshots \
@@ -220,8 +225,8 @@ pub async fn poll_once(
 /// unreachable at boot (xray still starting, supervisor backing off, etc.) and
 /// we want the poll loop to keep trying rather than failing fast.
 pub async fn connect() -> AppResult<StatsServiceClient<Channel>> {
-    let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{STATS_ADDR}"))
-        .map_err(|e| AppError::Xray(format!("bad stats endpoint {STATS_ADDR}: {e}")))?;
+    let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{API_ADDR}"))
+        .map_err(|e| AppError::Xray(format!("bad stats endpoint {API_ADDR}: {e}")))?;
     Ok(StatsServiceClient::new(endpoint.connect_lazy()))
 }
 
@@ -316,6 +321,27 @@ mod tests {
         assert_eq!(parse_stat_name("inbound>>>443>>>traffic>>>uplink"), None);
         assert_eq!(parse_stat_name("user>>>x>>>session>>>"), None);
         assert_eq!(parse_stat_name("user>>>>>>traffic>>>uplink"), None);
+    }
+
+    /// xray registers a user's counters on that user's first packet, so the
+    /// first value the panel ever sees already includes real traffic. Counting
+    /// it from zero is the difference between accounting for that burst and
+    /// silently dropping it (quota is enforced against this running total).
+    #[test]
+    fn never_recorded_client_counts_its_first_counter_from_zero() {
+        assert_eq!(delta(None, (234, 3651)), (234, 3651));
+    }
+
+    #[test]
+    fn recorded_client_counts_only_the_delta() {
+        assert_eq!(delta(Some((234, 3651)), (546, 8519)), (312, 4868));
+    }
+
+    /// xray's counters reset when it restarts; the cumulative total must not
+    /// follow them backwards.
+    #[test]
+    fn counter_reset_never_subtracts() {
+        assert_eq!(delta(Some((546, 8519)), (10, 20)), (0, 0));
     }
 
     #[test]

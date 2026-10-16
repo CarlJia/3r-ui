@@ -1,25 +1,34 @@
 //! xray-core subprocess lifecycle management.
 //!
 //! `XraySupervisor` owns the xray child process: spawns it, supervises its
-//! stderr, detects crashes via exit status, applies an exponential backoff
-//! before respawning (reset after 5 minutes of stable running), and accepts
-//! reload commands (Unix: SIGUSR1; Windows / SIGUSR1 unavailable: gRPC
-//! `ConfigService` — stub for U3, wired in U7 once tonic is in place).
+//! output, detects crashes via exit status, applies an exponential backoff
+//! before respawning (reset after 5 minutes of stable running), and applies
+//! config changes on request.
+//!
+//! There is no config-reload signal to send: xray ignores SIGUSR1 and dies on
+//! SIGHUP (measured on 26.3.27). A `Reload` therefore compares the rendered
+//! `config.json` against what the running child was started from and either
+//! edits the user lists over the gRPC API — which leaves existing connections
+//! alone — or restarts the child when the change is one xray cannot take at
+//! runtime (a new inbound, a port, REALITY keys).
 //!
 //! Before each spawn the supervisor reaps any stale xray process whose PID
 //! matches `${data_dir}/xray.pid`, so a `kill -9` of the panel cannot leave
 //! a zombie xray holding the inbound port and the stats port.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio::time::{sleep, sleep_until};
 
 use crate::error::{AppError, AppResult};
+use crate::xray::config::API_ADDR;
 
 /// Signal helpers backed by `libc` directly — spawning a shell for every
 /// signal is slow and, on macOS, `kill -0` against a process we do not own
@@ -49,11 +58,10 @@ mod signals {
 
     pub const SIGTERM: i32 = libc::SIGTERM;
     pub const SIGKILL: i32 = libc::SIGKILL;
-    pub const SIGUSR1: i32 = libc::SIGUSR1;
 }
 
 #[cfg(unix)]
-use signals::{is_alive, send, SIGKILL, SIGTERM, SIGUSR1};
+use signals::{is_alive, send, SIGKILL, SIGTERM};
 
 const BACKOFF: [Duration; 7] = [
     Duration::from_secs(1),
@@ -107,6 +115,126 @@ const START_CONFIRM_AFTER_OUTPUT: Duration = Duration::from_millis(500);
 struct SupervisorState {
     backoff_idx: usize,
     last_started: Option<Instant>,
+    /// What the running child was started from — see [`SpawnedConfig`]. `None`
+    /// when nothing is running, or when the config file could not be read at
+    /// spawn time.
+    spawned: Option<SpawnedConfig>,
+}
+
+/// The config a child was started from, reduced to what a live edit needs.
+///
+/// Two questions have to be answered when a `Reload` arrives: can this change
+/// be applied to a running xray at all, and if so, which users have to be added
+/// or removed. The first is a comparison of everything *except* the user lists
+/// ([`structure`](Self::structure), with the client arrays emptied out); the
+/// second is a comparison of those lists ([`users`](Self::users)).
+#[derive(Clone, Debug, PartialEq)]
+struct SpawnedConfig {
+    /// The rendered config with every inbound's client list emptied.
+    structure: Value,
+    /// Inbound tag → (client email → client UUID).
+    users: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl SpawnedConfig {
+    /// Read and reduce the config file, or `None` if it is missing or invalid.
+    fn read(path: &Path) -> Option<Self> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let config: Value = serde_json::from_str(&raw).ok()?;
+        Some(Self::of(&config))
+    }
+
+    fn of(config: &Value) -> Self {
+        let mut structure = config.clone();
+        let mut users = BTreeMap::new();
+
+        if let Some(inbounds) = structure
+            .get_mut("inbounds")
+            .and_then(|inbounds| inbounds.as_array_mut())
+        {
+            for inbound in inbounds {
+                let tag = inbound
+                    .get("tag")
+                    .and_then(|tag| tag.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let mut emails = BTreeMap::new();
+                if let Some(clients) = inbound
+                    .pointer_mut("/settings/clients")
+                    .and_then(|clients| clients.as_array_mut())
+                {
+                    // Draining leaves an empty array behind, which is what
+                    // keeps `structure` blind to the user list.
+                    for client in clients.drain(..) {
+                        let email = client
+                            .get("email")
+                            .and_then(|email| email.as_str())
+                            .unwrap_or_default();
+                        let uuid = client
+                            .get("id")
+                            .and_then(|uuid| uuid.as_str())
+                            .unwrap_or_default();
+                        if !email.is_empty() {
+                            emails.insert(email.to_string(), uuid.to_string());
+                        }
+                    }
+                }
+                users.insert(tag, emails);
+            }
+        }
+
+        Self { structure, users }
+    }
+
+    /// The user edits that turn what xray is running (`self`) into `next`.
+    ///
+    /// Removals come first: an email that changed UUID has to lose its old
+    /// account before the new one can claim it, because xray rejects a second
+    /// user with an email that is already in use. Inbounds present on only one
+    /// side are a structural change — the caller restarts for those — so they
+    /// are skipped here.
+    fn user_changes(&self, next: &SpawnedConfig) -> Vec<UserChange> {
+        let mut changes = Vec::new();
+        for (tag, users) in &next.users {
+            let Some(was) = self.users.get(tag) else {
+                continue;
+            };
+            for (email, uuid) in was {
+                if users.get(email) == Some(uuid) {
+                    continue;
+                }
+                changes.push(UserChange::Remove {
+                    tag: tag.clone(),
+                    email: email.clone(),
+                });
+            }
+            for (email, uuid) in users {
+                if was.get(email) == Some(uuid) {
+                    continue;
+                }
+                changes.push(UserChange::Add {
+                    tag: tag.clone(),
+                    email: email.clone(),
+                    uuid: uuid.clone(),
+                });
+            }
+        }
+        changes
+    }
+}
+
+/// One user edit to apply to a running xray.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UserChange {
+    Add {
+        tag: String,
+        email: String,
+        uuid: String,
+    },
+    Remove {
+        tag: String,
+        email: String,
+    },
 }
 
 /// What the supervisor is doing while no xray child is running.
@@ -124,6 +252,8 @@ pub struct XraySupervisor {
     config_path: PathBuf,
     pid_file: PathBuf,
     log_file: PathBuf,
+    /// Where xray serves its gRPC API — the address live user edits go to.
+    api_addr: String,
     /// 可选的 stderr 行通道：面板（lib.rs）把 `Some(tx)` 传进来，让
     /// `spawn` 把 xray 的每一行 stderr 同时送进 `src/xray/logs.rs` 做
     /// access-log 解析与落库。测试场景传 `None` 只写 tracing / 文件。
@@ -143,9 +273,17 @@ impl XraySupervisor {
             config_path,
             pid_file: data_dir.join("xray.pid"),
             log_file: data_dir.join("xray.log"),
+            api_addr: API_ADDR.to_string(),
             log_tx,
             state: Arc::new(Mutex::new(SupervisorState::default())),
         }
+    }
+
+    /// Dial a different gRPC API address. Tests point it at a mock
+    /// HandlerService; production always uses [`API_ADDR`].
+    pub fn with_api_addr(mut self, api_addr: impl Into<String>) -> Self {
+        self.api_addr = api_addr.into();
+        self
     }
 
     /// Reap any xray instance whose PID is recorded in the pid file, so a
@@ -248,6 +386,9 @@ impl XraySupervisor {
 
         let mut state = self.state.lock().await;
         state.last_started = Some(Instant::now());
+        // What this child is being started from: a later `Reload` diffs the
+        // config file against it to decide between a live edit and a restart.
+        state.spawned = SpawnedConfig::read(&self.config_path);
         Ok(child)
     }
 
@@ -276,33 +417,52 @@ impl XraySupervisor {
         delay
     }
 
-    /// Send SIGUSR1 to reload xray's config in place. Returns Ok on Unix
-    /// unconditionally (best-effort); on non-Unix returns
-    /// `AppError::NotImplemented` because the gRPC ConfigService fallback
-    /// requires the stats client from U7.
-    pub async fn reload(&self) -> AppResult<()> {
-        let pid_str = std::fs::read_to_string(&self.pid_file).map_err(AppError::Io)?;
-        let pid: i32 = pid_str
-            .trim()
-            .parse()
-            .map_err(|e| AppError::Xray(format!("xray pid parse failed: {e}")))?;
-
-        #[cfg(unix)]
-        {
-            send(pid, SIGUSR1).map_err(|e| {
-                AppError::Xray(format!("xray SIGUSR1 (reload) failed for pid {pid}: {e}"))
-            })?;
-            tracing::info!(pid, "xray reload signal sent");
-            Ok(())
+    /// Apply the config on disk to the running child in place.
+    ///
+    /// User-list changes go through the gRPC API, which leaves every live
+    /// connection alone; anything else — and any API failure — reports `false`,
+    /// and the caller restarts, which applies the config as well.
+    async fn apply_live_config(&self) -> bool {
+        let Some(next) = SpawnedConfig::read(&self.config_path) else {
+            tracing::warn!("xray config.json is unreadable; restarting to apply it");
+            return false;
+        };
+        let previous = self.state.lock().await.spawned.clone();
+        let Some(previous) = previous else {
+            tracing::info!("no recorded xray config to diff against; restarting");
+            return false;
+        };
+        if previous.structure != next.structure {
+            tracing::info!("xray config changed structurally; restarting to apply it");
+            return false;
         }
 
-        #[cfg(not(unix))]
-        {
-            let _ = pid;
-            Err(AppError::NotImplemented(
-                "xray reload via gRPC ConfigService; wired in U7".into(),
-            ))
+        let changes = previous.user_changes(&next);
+        if changes.is_empty() {
+            tracing::debug!("xray config reloaded with no user-list change");
+            return true;
         }
+        for change in &changes {
+            let applied = match change {
+                UserChange::Add { tag, email, uuid } => {
+                    crate::xray::api::add_user(&self.api_addr, tag, uuid, email).await
+                }
+                UserChange::Remove { tag, email } => {
+                    crate::xray::api::remove_user(&self.api_addr, tag, email).await
+                }
+            };
+            if let Err(e) = applied {
+                tracing::warn!(
+                    error = %e,
+                    "live xray user edit failed; restarting to apply the config"
+                );
+                return false;
+            }
+            tracing::info!(?change, "applied a user edit to the running xray");
+        }
+
+        self.state.lock().await.spawned = Some(next);
+        true
     }
 
     /// Main supervisor loop. Spawns xray, waits for it to exit, applies the
@@ -447,22 +607,12 @@ impl XraySupervisor {
                                 continue 'respawn;
                             }
                             Some(SupervisorCommand::Reload) => {
-                                match self.reload().await {
-                                    Ok(()) => {}
-                                    // No in-place reload on this platform, so
-                                    // the only way to apply the new config is
-                                    // to restart the child.
-                                    Err(AppError::NotImplemented(_)) => {
-                                        tracing::info!(
-                                            "xray cannot reload in place on this platform; restarting to apply the config"
-                                        );
-                                        stop_child(&mut child).await;
-                                        continue 'respawn;
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "xray reload failed");
-                                    }
+                                if self.apply_live_config().await {
+                                    continue;
                                 }
+                                tracing::info!("restarting xray to apply the new config");
+                                stop_child(&mut child).await;
+                                continue 'respawn;
                             }
                         }
                     }
@@ -611,4 +761,111 @@ fn forward_output<R>(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spawn_config(config: Value) -> SpawnedConfig {
+        SpawnedConfig::of(&config)
+    }
+
+    fn config(clients: &[(&str, &str)]) -> Value {
+        serde_json::json!({
+            "inbounds": [{
+                "tag": "inbound-1",
+                "port": 8443,
+                "settings": {
+                    "clients": clients
+                        .iter()
+                        .map(|(uuid, email)| serde_json::json!({
+                            "id": uuid, "email": email, "level": 0
+                        }))
+                        .collect::<Vec<_>>(),
+                    "decryption": "none",
+                },
+            }],
+        })
+    }
+
+    /// The structure comparison is what routes a reload to the API or to a
+    /// restart, so it has to be blind to the user list and sensitive to
+    /// everything else.
+    #[test]
+    fn structure_ignores_users_but_sees_everything_else() {
+        let before = spawn_config(config(&[]));
+        let after_users = spawn_config(config(&[("uuid-1", "user-1")]));
+        assert_eq!(before.structure, after_users.structure);
+
+        let mut moved_port = config(&[("uuid-1", "user-1")]);
+        moved_port["inbounds"][0]["port"] = serde_json::json!(9443);
+        assert_ne!(before.structure, spawn_config(moved_port).structure);
+    }
+
+    #[test]
+    fn user_changes_report_additions_and_removals() {
+        let before = spawn_config(config(&[("uuid-1", "user-1")]));
+        let after = spawn_config(config(&[("uuid-1", "user-1"), ("uuid-2", "user-2")]));
+        assert_eq!(
+            before.user_changes(&after),
+            vec![UserChange::Add {
+                tag: "inbound-1".into(),
+                email: "user-2".into(),
+                uuid: "uuid-2".into(),
+            }]
+        );
+        assert_eq!(
+            after.user_changes(&before),
+            vec![UserChange::Remove {
+                tag: "inbound-1".into(),
+                email: "user-2".into(),
+            }]
+        );
+    }
+
+    /// A rotated UUID keeps the email, so the old account has to go first:
+    /// xray rejects a second user with an email that is already taken.
+    #[test]
+    fn a_rotated_uuid_removes_before_it_adds() {
+        let before = spawn_config(config(&[("uuid-1", "user-1")]));
+        let after = spawn_config(config(&[("uuid-2", "user-1")]));
+        assert_eq!(
+            before.user_changes(&after),
+            vec![
+                UserChange::Remove {
+                    tag: "inbound-1".into(),
+                    email: "user-1".into(),
+                },
+                UserChange::Add {
+                    tag: "inbound-1".into(),
+                    email: "user-1".into(),
+                    uuid: "uuid-2".into(),
+                },
+            ]
+        );
+    }
+
+    /// An inbound that appears or disappears is structural, not a user edit:
+    /// reporting it as one would send the API a tag that does not exist there.
+    #[test]
+    fn user_changes_skip_inbounds_that_only_one_side_has() {
+        let one = config(&[("uuid-1", "user-1")]);
+        let mut two = one.clone();
+        two["inbounds"].as_array_mut().unwrap().push(
+            serde_json::json!({"tag": "inbound-2", "port": 9443, "settings": {"clients": []}}),
+        );
+
+        assert!(spawn_config(one.clone())
+            .user_changes(&spawn_config(two.clone()))
+            .is_empty());
+        assert!(spawn_config(two)
+            .user_changes(&spawn_config(one))
+            .is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_or_missing_config_has_no_snapshot() {
+        assert!(SpawnedConfig::read(Path::new("/nonexistent/config.json")).is_none());
+    }
 }

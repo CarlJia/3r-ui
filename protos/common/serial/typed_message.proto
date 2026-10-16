@@ -1,0 +1,14 @@
+// Vendored from https://github.com/XTLS/Xray-core/blob/main/common/serial/typed_message.proto
+// Pin a known commit in your upgrade notes when bumping xray-core.
+syntax = "proto3";
+
+package xray.common.serial;
+option go_package = "github.com/xtls/xray-core/common/serial";
+
+// TypedMessage is a serialized proto message along with its type name.
+message TypedMessage {
+  // The name of the message type, retrieved from protobuf API.
+  string type = 1;
+  // Serialized proto message.
+  bytes value = 2;
+}
