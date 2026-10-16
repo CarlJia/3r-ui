@@ -108,14 +108,16 @@
                value="{% match inbound %}{% when Some with (i) %}{{ i.listen_port }}{% when None %}443{% endmatch %}"
                required>
         <label for="dest">REALITY dest（伪装目标域名）</label>
-        <input id="dest" name="dest" placeholder="www.microsoft.com"
+        <input id="dest" name="dest" placeholder="www.apple.com"
                value="{% match inbound %}{% when Some with (i) %}{{ i.dest }}{% when None %}{% endmatch %}"
                required>
         <label for="sni">SNI（serverName）</label>
-        <input id="sni" name="sni" placeholder="www.microsoft.com"
+        <input id="sni" name="sni" placeholder="www.apple.com"
                value="{% match inbound %}{% when Some with (i) %}{{ i.sni }}{% when None %}{% endmatch %}"
                required>
         <p class="hint">填其中一个会自动同步另一个；要分别配置时直接编辑其中一项即可。</p>
+        <p class="hint">目标站要支持 TLS 1.3 + HTTP/2，并且服务器能稳定访问（就近的大站最好）。
+          www.microsoft.com 已不能作为 REALITY 目标，不要再用。</p>
         <label for="short_id">shortId（1-16 位十六进制）</label>
         <div class="shortid-row">
           <input id="short_id" name="short_id" placeholder="0123456789abcdef"

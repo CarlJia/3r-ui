@@ -65,7 +65,7 @@ async fn boot_with_inbound_and_client() -> (Harness, i64) {
     sqlx::query(
         "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
                 public_key, short_id, status, created_at, updated_at) \
-         VALUES (443, 'www.microsoft.com', 'www.microsoft.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
+         VALUES (443, 'www.apple.com', 'www.apple.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
                 'active', unixepoch(), unixepoch())",
     )
     .execute(&h.pool)
@@ -155,7 +155,7 @@ async fn detail_page_renders_the_vless_uri() {
         "type=xhttp",
         "security=reality",
         "pbk=PUBKEY",
-        "sni=www.microsoft.com",
+        "sni=www.apple.com",
         "sid=abcd",
         "fp=chrome",
         "#alice",

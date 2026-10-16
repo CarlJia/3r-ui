@@ -253,8 +253,8 @@ mod tests {
         Inbound {
             id: 1,
             listen_port: 443,
-            dest: "www.microsoft.com".into(),
-            sni: "www.microsoft.com".into(),
+            dest: "www.apple.com".into(),
+            sni: "www.apple.com".into(),
             server_name: None,
             private_key: "PRIVATE".into(),
             public_key: "PUBLIC".into(),
@@ -290,8 +290,8 @@ mod tests {
         // client requests the default `/`; a server path of `/xhttp` would
         // never match it and the tunnel would silently drop every connection.
         assert_eq!(ss["xhttpSettings"]["path"], "/");
-        assert_eq!(ss["realitySettings"]["dest"], "www.microsoft.com:443");
-        assert_eq!(ss["realitySettings"]["serverNames"][0], "www.microsoft.com");
+        assert_eq!(ss["realitySettings"]["dest"], "www.apple.com:443");
+        assert_eq!(ss["realitySettings"]["serverNames"][0], "www.apple.com");
         assert_eq!(ss["realitySettings"]["shortIds"][0], "abcd");
     }
 

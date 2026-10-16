@@ -287,7 +287,7 @@ async fn create_inbound_persists_and_renders_config() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=www.microsoft.com&sni=www.microsoft.com&short_id=abcd",
+        "listen_port=8443&dest=www.apple.com&sni=www.apple.com&short_id=abcd",
     )
     .await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);

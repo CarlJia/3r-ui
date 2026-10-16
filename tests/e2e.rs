@@ -338,7 +338,7 @@ fn full_admin_flow_completes() {
         "POST",
         "/admin/inbound",
         Some(&form_with_csrf(
-            "listen_port=2053&dest=www.microsoft.com&sni=www.microsoft.com&short_id=abcd",
+            "listen_port=2053&dest=www.apple.com&sni=www.apple.com&short_id=abcd",
         )),
         &cookies,
     )
