@@ -24,6 +24,12 @@ use crate::error::{AppError, AppResult};
 /// Vendored protobuf trees, mounted where their package paths say they live:
 /// the generated code refers to sibling packages through `super::…` chains, so
 /// the nesting has to mirror `xray.app.…` / `xray.common.…` / `xray.proxy.…`.
+///
+/// Every generated client stub returns `Result<Response<_>, tonic::Status>`,
+/// and `Status` is 176 bytes, so `clippy::result_large_err` fires on code we
+/// neither wrote nor can change. Silence it here, on the tree, rather than at
+/// each call site — `make clippy` runs with `-D warnings`.
+#[allow(clippy::result_large_err)]
 pub mod proto {
     pub mod xray {
         pub mod app {
