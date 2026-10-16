@@ -86,6 +86,10 @@
       display: block; margin-top: 4px; font-size: 12px; opacity: .65;
       font-variant-numeric: tabular-nums;
     }
+    /* An author `display` declaration beats the UA stylesheet's
+       `[hidden] { display: none }`, so hiding either half of the bar from the
+       script needs a rule of its own. */
+    .progress[hidden], .progress-text[hidden] { display: none; }
     @media (prefers-color-scheme: dark) {
       .progress { background: #2c3037; }
     }
@@ -166,8 +170,8 @@
               <span class="status-message-text">{{ job.message }}</span>
               <div class="progress" hidden>
                 <div class="progress-bar"></div>
-                <span class="progress-text"></span>
               </div>
+              <span class="progress-text"></span>
             </td>
             <td>{{ job.started_at_iso }}</td>
           </tr>
@@ -198,13 +202,14 @@
 
       function renderProgress(row, stage, downloaded, total) {
         var wrap = row.querySelector(".progress");
-        if (!wrap) return;
+        var text = row.querySelector(".progress-text");
+        if (!wrap || !text) return;
         var show = isDownloadStage(stage);
         wrap.hidden = !show;
+        text.hidden = !show;
         if (!show) return;
 
         var bar = wrap.querySelector(".progress-bar");
-        var text = wrap.querySelector(".progress-text");
         if (total > 0) {
           var percent = Math.min(100, Math.round(downloaded * 100 / total));
           bar.classList.remove("progress-bar-indeterminate");

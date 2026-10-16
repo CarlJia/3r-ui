@@ -380,7 +380,12 @@ async fn settings_page_renders_progress_attributes_for_an_active_job() {
         r#"data-stage="downloading""#,
         r#"data-downloaded="4900000""#,
         r#"data-total="19600000""#,
+        // The elements the polling script repaints; dropping one breaks the bar
+        // without any error.
+        r#"class="progress""#,
         r#"class="progress-bar""#,
+        r#"class="progress-text""#,
+        r#"class="status-message-text""#,
     ] {
         assert!(html.contains(expected), "missing {expected} in page");
     }
