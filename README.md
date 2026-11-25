@@ -67,6 +67,26 @@ systemctl restart 3r-ui
 
 ---
 
+## 一键完全卸载 (Uninstall)
+
+在您的 VPS 上直接执行以下任一命令即可完全卸载：
+
+```bash
+# 方式 1：直接运行专属卸载脚本
+bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/uninstall.sh)
+
+# 方式 2：或者通过 install 脚本传递 uninstall 参数
+bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh) uninstall
+```
+
+卸载脚本会自动：
+1. 停止并禁用 `3r-ui` systemd 服务；
+2. 清理残留的 Xray 与 Mieru 后台子进程；
+3. 删除系统服务文件与可执行二进制文件；
+4. 交互式询问是否一并彻底清除数据库、证书及日志目录。
+
+---
+
 ## 声明与免责条款 (Disclaimer)
 
 ### 1. 软件用途与定位

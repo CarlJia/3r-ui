@@ -13,6 +13,9 @@
 #   # 3. Or via LOCAL_BIN environment variable:
 #   LOCAL_BIN=/root/3r-ui-x86_64-unknown-linux-musl bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
 #
+#   # 4. Or uninstall:
+#   bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh) uninstall
+#
 
 set -euo pipefail
 
@@ -42,6 +45,16 @@ error() {
 # 1. Root check
 if [[ $EUID -ne 0 ]]; then
     error "This script must be run as root (or with sudo)."
+fi
+
+# Handle uninstall command
+if [[ "${1:-}" == "uninstall" || "${1:-}" == "remove" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+    if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/uninstall.sh" ]]; then
+        exec bash "$SCRIPT_DIR/uninstall.sh" "${@:2}"
+    else
+        exec bash <(curl -fsSL "https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/uninstall.sh?$(date +%s)") "${@:2}"
+    fi
 fi
 
 # 2. OS distribution check
