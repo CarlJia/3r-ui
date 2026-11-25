@@ -39,8 +39,8 @@ DEPLOY_MODE="release"
 # 当 DEPLOY_MODE="local" 时生效的本地二进制路径 (留空默认使用 ./target/release/3r-ui)
 LOCAL_BINARY=""
 
-# GitHub 仓库名 (用于下载 release，默认 XTLS/3r-ui)
-GITHUB_REPO="XTLS/3r-ui"
+# GitHub 仓库名 (用于下载 release，默认 CarlJia/3r-ui)
+GITHUB_REPO="CarlJia/3r-ui"
 
 
 # --------------------------------------------------------

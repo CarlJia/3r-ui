@@ -1,6 +1,59 @@
 # 3R-UI
 
-高性能、轻量级、自托管的代理核心可视化管理面板 (基于 Rust + Axum + SQLite 构建)。
+高性能、轻量级、自托管的代理核心可视化管理面板 (基于 Rust + Axum + SQLite 构建)。支持 VLESS (REALITY / XHTTP)、Hysteria 2、Mieru 入站协议，并内置 Pingora 反向代理与自动申请 TLS 证书。
+
+---
+
+## 快速安装与部署 (Quick Start)
+
+### 方式一：在远程 VPS 上一键在线安装（推荐）
+
+直接在您的 Debian 或 Ubuntu VPS（支持 x86_64 和 ARM64）终端中执行以下命令：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
+```
+
+脚本将自动完成：
+1. 识别系统发行版与硬件架构（x86_64 / aarch64）。
+2. 从 GitHub Releases 下载适配的预编译二进制并安装至 `/usr/local/bin/3r-ui`。
+3. 配置系统服务 `/etc/systemd/system/3r-ui.service` 与环境配置 `/etc/3r-ui/3r-ui.env`。
+4. 注册开机自启并启动 3R-UI 服务。
+5. 打印初始管理员账号与访问密码。
+
+---
+
+### 方式二：本地一键远程批量部署 VPS
+
+如果您在本地机器拥有代码，希望通过 SSH 直接远程配置并推送部署一台或多台 VPS：
+
+1. **准备配置文件**：
+   ```bash
+   cp scripts/deploy.conf.example scripts/deploy.conf
+   ```
+2. **编辑 `scripts/deploy.conf`**，填写 VPS 的 IP、SSH 端口、密钥及面板运行参数。
+3. **执行一键部署**：
+   ```bash
+   ./scripts/deploy.sh
+   ```
+
+---
+
+## 常用管理命令
+
+```bash
+# 查看服务运行状态
+systemctl status 3r-ui
+
+# 查看实时运行日志
+journalctl -u 3r-ui -f
+
+# 查看初始管理员账号与密码
+journalctl -u 3r-ui -n 50 --no-pager | grep -A 4 'admin password'
+
+# 重启服务
+systemctl restart 3r-ui
+```
 
 ---
 

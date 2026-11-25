@@ -74,7 +74,7 @@ if [[ -z "$VPS_HOST" || "$VPS_HOST" == "your-vps-ip" ]]; then
 fi
 
 DEPLOY_MODE="${DEPLOY_MODE:-release}"
-GITHUB_REPO="${GITHUB_REPO:-XTLS/3r-ui}"
+GITHUB_REPO="${GITHUB_REPO:-CarlJia/3r-ui}"
 BIND_ADDR="${BIND_ADDR:-127.0.0.1:2053}"
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 XRAY_DOWNLOAD_BASE="${XRAY_DOWNLOAD_BASE:-https://api.github.com}"

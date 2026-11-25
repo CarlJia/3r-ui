@@ -4,7 +4,7 @@
 #
 # Usage:
 #   # Install using precompiled binary or latest release:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/XTLS/3r-ui/main/packaging/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
 #   # Or install from a local binary:
 #   sudo bash packaging/install.sh ./target/release/3r-ui
 #
@@ -118,7 +118,7 @@ elif [[ -f "./target/release/3r-ui" ]]; then
     cp -f "./target/release/3r-ui" "$INSTALL_DIR/3r-ui"
 else
     info "Fetching latest release binary for $TARGET_ARCH from GitHub..."
-    GITHUB_REPO="XTLS/3r-ui"
+    GITHUB_REPO="CarlJia/3r-ui"
     RELEASE_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
     DOWNLOAD_URL=$(curl -fsSL "$RELEASE_API" | grep "browser_download_url" | grep "$TARGET_ARCH" | head -n 1 | cut -d '"' -f 4 || true)
 
