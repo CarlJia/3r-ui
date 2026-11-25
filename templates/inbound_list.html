@@ -116,7 +116,7 @@
             <td><code>{% if ib.sni.is_empty() %}-{% else %}{{ ib.sni }}{% endif %}</code></td>
             <td style="font-size: 12px; opacity: .85;">
               {% if ib.protocol == "hysteria2" %}
-              QUIC · 证书: {{ ib.cert_mode }} · 伪装: {{ ib.masquerade_url }}
+              QUIC · 证书: {{ ib.cert_mode }}{% if ib.skip_cert_verify %} (跳过校验){% endif %} · UDP: {% if ib.udp %}开启{% else %}关闭{% endif %} · 伪装: {{ ib.masquerade_url }}
               {% else if ib.protocol == "mieru" %}
               Mieru · {{ ib.transport_protocol }} · 动态混淆加盐 (免证书)
               {% else %}

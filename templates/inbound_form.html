@@ -91,6 +91,8 @@
         {% if ib.protocol == "hysteria2" %}
         <dt>SNI</dt><dd>{{ ib.sni }}</dd>
         <dt>证书模式</dt><dd>{{ ib.cert_mode }}</dd>
+        <dt>跳过证书校验</dt><dd>{% if ib.skip_cert_verify %}已开启 (下发 insecure=1){% else %}已关闭 (严格校验){% endif %}</dd>
+        <dt>UDP 转发支持</dt><dd>{% if ib.udp %}已开启 (下发 udp=1){% else %}已关闭{% endif %}</dd>
         <dt>伪装网址</dt><dd>{{ ib.masquerade_url }}</dd>
         {% if !ib.custom_cert_path.is_empty() %}
         <dt>自定义证书</dt><dd>{{ ib.custom_cert_path }}</dd>
@@ -202,10 +204,49 @@
                    value="{% match inbound %}{% when Some with (i) %}{{ i.custom_key_path }}{% when None %}{% endmatch %}">
           </div>
 
+          <label for="skip_cert_verify">跳过 TLS 证书验证 (skip-cert-verify / insecure)</label>
+          <select id="skip_cert_verify" name="skip_cert_verify">
+            <option value="0" {% match inbound %}{% when Some with (i) %}{% if !i.skip_cert_verify %}selected{% endif %}{% when None %}selected{% endmatch %}>不跳过（严格校验 TLS 证书，默认用于正规域名证书）</option>
+            <option value="1" {% match inbound %}{% when Some with (i) %}{% if i.skip_cert_verify %}selected{% endif %}{% when None %}{% endmatch %}>跳过校验（允许自签/不安全证书，自动下发 skip-cert-verify / insecure）</option>
+          </select>
+          <p class="hint">若服务器使用自签名 fallback 证书或私有证书，请选择“跳过校验”，客户端将自动忽略证书链错误。</p>
+
+          <label for="udp">UDP 转发支持 (udp)</label>
+          <select id="udp" name="udp">
+            <option value="1" {% match inbound %}{% when Some with (i) %}{% if i.udp %}selected{% endif %}{% when None %}selected{% endmatch %}>开启（默认，自动下发 udp=1 并在 Clash/Mihomo 中标记为支持 UDP）</option>
+            <option value="0" {% match inbound %}{% when Some with (i) %}{% if !i.udp %}selected{% endif %}{% when None %}{% endmatch %}>关闭</option>
+          </select>
+          <p class="hint">下发到 Clash Meta / Mihomo / 订阅转换器时自动携带 UDP 支持标记。</p>
+
           <label for="masquerade_url">HTTP 伪装网址（QUIC Masquerade）</label>
-          <input id="masquerade_url" name="masquerade_url" placeholder="https://news.ycombinator.com/"
-                 value="{% match inbound %}{% when Some with (i) %}{% if i.masquerade_url.is_empty() %}https://news.ycombinator.com/{% else %}{{ i.masquerade_url }}{% endif %}{% when None %}https://news.ycombinator.com/{% endmatch %}">
-          <p class="hint">当未经认证的探测或 HTTP 请求访问该 UDP 端口时，自动反向代理到该伪装网站。</p>
+          <div class="shortid-row">
+            <input id="masquerade_url" name="masquerade_url" list="masquerade-candidates" placeholder="https://news.ycombinator.com/"
+                   value="{% match inbound %}{% when Some with (i) %}{% if i.masquerade_url.is_empty() %}https://news.ycombinator.com/{% else %}{{ i.masquerade_url }}{% endif %}{% when None %}https://news.ycombinator.com/{% endmatch %}">
+            <button class="btn-secondary" type="button" id="masquerade-auto-pick" title="从高信誉网址库中自动优选一个伪装网址">自动优选</button>
+          </div>
+          <datalist id="masquerade-candidates">
+            <option value="https://news.ycombinator.com/">Hacker News (极简极速·推荐)</option>
+            <option value="https://www.apple.com/">Apple 苹果官网 (全球高信誉 CDN)</option>
+            <option value="https://aws.amazon.com/">AWS 亚马逊云服务</option>
+            <option value="https://www.microsoft.com/">Microsoft 微软官网</option>
+            <option value="https://www.cloudflare.com/">Cloudflare 官网</option>
+            <option value="https://www.debian.org/">Debian 官方开源站点</option>
+            <option value="https://www.kernel.org/">Linux Kernel 内核站点</option>
+            <option value="https://www.archlinux.org/">Arch Linux 官方网站</option>
+            <option value="https://www.rust-lang.org/">Rust 语言官方站点</option>
+            <option value="https://go.dev/">Go 语言官网</option>
+            <option value="https://www.python.org/">Python 官方网站</option>
+            <option value="https://developer.mozilla.org/">MDN Web 文档中心</option>
+            <option value="https://www.apache.org/">Apache 软件基金会</option>
+            <option value="https://hub.docker.com/">Docker Hub 官方容器库</option>
+            <option value="https://www.mit.edu/">MIT 麻省理工学院</option>
+            <option value="https://www.stanford.edu/">Stanford 斯坦福大学</option>
+            <option value="https://www.cam.ac.uk/">University of Cambridge 剑桥大学</option>
+            <option value="https://www.ox.ac.uk/">University of Oxford 牛津大学</option>
+            <option value="https://en.wikipedia.org/">Wikipedia 维基百科</option>
+            <option value="https://www.speedtest.net/">Speedtest 测速官网</option>
+          </datalist>
+          <p class="hint">当未经认证的探测或 HTTP 请求访问该 UDP 端口时，自动反向代理到该伪装网站。可双击输入框选择候选，或点击【自动优选】随机选填高信誉伪装站。</p>
         </div>
 
         <div class="actions" style="margin-top:16px;">
@@ -346,6 +387,45 @@
       }
       linkPair(dest, sni);
       linkPair(sni, dest);
+    })();
+
+    (function () {
+      const btn = document.getElementById('masquerade-auto-pick');
+      const input = document.getElementById('masquerade_url');
+      if (!btn || !input) return;
+
+      const candidates = [
+        "https://news.ycombinator.com/",
+        "https://www.apple.com/",
+        "https://aws.amazon.com/",
+        "https://www.microsoft.com/",
+        "https://www.cloudflare.com/",
+        "https://www.debian.org/",
+        "https://www.kernel.org/",
+        "https://www.archlinux.org/",
+        "https://www.rust-lang.org/",
+        "https://go.dev/",
+        "https://www.python.org/",
+        "https://developer.mozilla.org/",
+        "https://www.apache.org/",
+        "https://hub.docker.com/",
+        "https://www.mit.edu/",
+        "https://www.stanford.edu/",
+        "https://www.cam.ac.uk/",
+        "https://www.ox.ac.uk/",
+        "https://en.wikipedia.org/",
+        "https://www.speedtest.net/"
+      ];
+
+      btn.addEventListener('click', () => {
+        const current = input.value.trim();
+        const available = candidates.filter(url => url !== current);
+        const pick = available[Math.floor(Math.random() * available.length)] || candidates[0];
+        input.value = pick;
+        input.focus();
+        input.select();
+        if (window.showToast) window.showToast('已优选伪装网址: ' + pick, 'info', 2000);
+      });
     })();
   </script>
 </body>

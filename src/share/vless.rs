@@ -91,6 +91,8 @@ mod tests {
             masquerade_url: "".into(),
             port_range: "".into(),
             transport_protocol: "TCP".into(),
+            skip_cert_verify: 0,
+            udp: 1,
             status: "active".into(),
             created_at: None,
             updated_at: None,

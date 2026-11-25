@@ -44,7 +44,7 @@ pub async fn handle_subscription(
     let mut inbounds = match sqlx::query_as::<_, Inbound>(
         "SELECT i.id, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
                 i.short_id, i.xhttp_path, i.protocol, i.cert_mode, i.custom_cert_path, i.custom_key_path, \
-                i.masquerade_url, i.port_range, i.transport_protocol, i.status, i.created_at, i.updated_at \
+                i.masquerade_url, i.port_range, i.transport_protocol, i.skip_cert_verify, i.udp, i.status, i.created_at, i.updated_at \
          FROM inbounds i \
          JOIN client_inbounds ci ON ci.inbound_id = i.id \
          WHERE ci.client_id = ? AND i.status = 'active' \
@@ -66,7 +66,7 @@ pub async fn handle_subscription(
         if let Ok(Some(single)) = sqlx::query_as::<_, Inbound>(
             "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, \
                     short_id, xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, \
-                    masquerade_url, port_range, transport_protocol, status, created_at, updated_at \
+                    masquerade_url, port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
              FROM inbounds WHERE id = ? AND status = 'active'",
         )
         .bind(client.inbound_id)

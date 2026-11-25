@@ -54,7 +54,7 @@ pub async fn generate_config(pool: &SqlitePool) -> AppResult<Option<MieruServerC
     let inbounds: Vec<Inbound> = sqlx::query_as(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE protocol = 'mieru' AND status = 'active' ORDER BY id ASC",
     )
     .fetch_all(pool)

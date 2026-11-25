@@ -59,6 +59,8 @@ pub struct InboundView {
     pub masquerade_url: String,
     pub port_range: String,
     pub transport_protocol: String,
+    pub skip_cert_verify: bool,
+    pub udp: bool,
     pub status: String,
     pub is_active: bool,
 }
@@ -80,6 +82,8 @@ impl From<&Inbound> for InboundView {
             masquerade_url: i.masquerade_url.clone(),
             port_range: i.port_range.clone(),
             transport_protocol: i.transport_protocol.clone(),
+            skip_cert_verify: i.skip_cert_verify == 1,
+            udp: i.udp == 1,
             status: i.status.clone(),
             is_active: i.status == "active",
         }
@@ -116,8 +120,20 @@ pub struct InboundForm {
     pub port_range: String,
     #[serde(default = "default_transport_protocol")]
     pub transport_protocol: String,
+    #[serde(default = "default_skip_cert_verify")]
+    pub skip_cert_verify: String,
+    #[serde(default = "default_udp")]
+    pub udp: String,
     #[serde(default = "default_status")]
     pub status: String,
+}
+
+fn default_skip_cert_verify() -> String {
+    "0".to_string()
+}
+
+fn default_udp() -> String {
+    "1".to_string()
 }
 
 fn default_transport_protocol() -> String {
@@ -350,7 +366,12 @@ async fn handle_save(
         let masquerade_url = if form.masquerade_url.trim().is_empty() {
             "https://news.ycombinator.com/".to_string()
         } else {
-            form.masquerade_url.trim().to_string()
+            let m = form.masquerade_url.trim();
+            if !m.starts_with("http://") && !m.starts_with("https://") {
+                format!("https://{m}")
+            } else {
+                m.to_string()
+            }
         };
 
         (
@@ -417,6 +438,15 @@ async fn handle_save(
         )
     };
 
+    let skip_cert_verify: i64 = match form.skip_cert_verify.trim() {
+        "1" | "true" | "on" => 1,
+        _ => 0,
+    };
+    let udp: i64 = match form.udp.trim() {
+        "0" | "false" | "off" => 0,
+        _ => 1,
+    };
+
     let status = if form.status.trim() == "disabled" {
         "disabled".to_string()
     } else {
@@ -445,7 +475,8 @@ async fn handle_save(
             sqlx::query(
                 "UPDATE inbounds SET listen_port = ?, dest = ?, sni = ?, short_id = ?, \
                         xhttp_path = ?, private_key = ?, public_key = ?, protocol = ?, cert_mode = ?, \
-                        custom_cert_path = ?, custom_key_path = ?, masquerade_url = ?, port_range = ?, transport_protocol = ?, status = ?, \
+                        custom_cert_path = ?, custom_key_path = ?, masquerade_url = ?, port_range = ?, transport_protocol = ?, \
+                        skip_cert_verify = ?, udp = ?, status = ?, \
                         updated_at = unixepoch() \
                  WHERE id = ?",
             )
@@ -463,6 +494,8 @@ async fn handle_save(
             .bind(&masquerade_url)
             .bind(&port_range)
             .bind(&transport_protocol)
+            .bind(skip_cert_verify)
+            .bind(udp)
             .bind(&status)
             .bind(inbound.id)
             .execute(&state.pool)
@@ -472,9 +505,10 @@ async fn handle_save(
             sqlx::query(
                 "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
                         public_key, short_id, xhttp_path, protocol, cert_mode, \
-                        custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, status, \
+                        custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, \
+                        skip_cert_verify, udp, status, \
                         created_at, updated_at) \
-                 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())",
+                 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())",
             )
             .bind(port)
             .bind(&dest)
@@ -490,6 +524,8 @@ async fn handle_save(
             .bind(&masquerade_url)
             .bind(&port_range)
             .bind(&transport_protocol)
+            .bind(skip_cert_verify)
+            .bind(udp)
             .bind(&status)
             .execute(&state.pool)
             .await
@@ -608,7 +644,7 @@ async fn list_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<I
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status != 'deleted' ORDER BY id ASC",
     )
     .fetch_all(pool)
@@ -621,7 +657,7 @@ async fn list_active_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResul
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id ASC",
     )
     .fetch_all(pool)

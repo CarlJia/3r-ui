@@ -26,6 +26,8 @@ pub struct Inbound {
     pub masquerade_url: String,
     pub port_range: String,
     pub transport_protocol: String,
+    pub skip_cert_verify: i64,
+    pub udp: i64,
     pub status: String,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,

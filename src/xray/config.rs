@@ -133,7 +133,7 @@ pub async fn active_inbounds(pool: &SqlitePool) -> AppResult<Vec<Inbound>> {
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id",
     )
     .fetch_all(pool)
@@ -447,6 +447,8 @@ mod tests {
             masquerade_url: "".into(),
             port_range: "".into(),
             transport_protocol: "TCP".into(),
+            skip_cert_verify: 0,
+            udp: 1,
             status: "active".into(),
             created_at: None,
             updated_at: None,
