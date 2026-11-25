@@ -544,7 +544,12 @@
 
       function pollCertStatus() {
         fetch("/admin/settings/proxy/cert-status")
-          .then(function(r) { return r.json(); })
+          .then(function(r) {
+            if (!r.ok) {
+              throw new Error("HTTP " + r.status);
+            }
+            return r.json();
+          })
           .then(function(data) {
             if (!data || data.stage === "Idle") {
               return;
@@ -585,7 +590,11 @@
               certInterval = null;
             }
           })
-          .catch(function() {});
+          .catch(function(err) {
+            if (certInterval) {
+              certLogBox.textContent += "\n[警告] 获取状态失败: " + err;
+            }
+          });
       }
 
       // 页面初次加载时检查：若已有任务在跑，自动启动轮询
@@ -604,15 +613,25 @@
           var btn = document.getElementById("request-cert-btn");
           if (btn) btn.disabled = true;
 
-          var formData = new FormData(reqCertForm);
+          var urlParams = new URLSearchParams(new FormData(reqCertForm));
+          var csrfInput = reqCertForm.querySelector('input[name="csrf"]');
+          var csrfVal = csrfInput ? csrfInput.value : "";
+
           fetch(reqCertForm.action, {
             method: "POST",
-            body: formData,
+            body: urlParams.toString(),
             headers: {
-              "Accept": "application/json"
+              "Content-Type": "application/x-www-form-urlencoded",
+              "Accept": "application/json",
+              "X-CSRF-Token": csrfVal
             }
           })
-          .then(function() {
+          .then(function(res) {
+            if (!res.ok) {
+              return res.text().then(function(t) {
+                throw new Error("HTTP " + res.status + ": " + (t || res.statusText));
+              });
+            }
             if (!certInterval) {
               certInterval = setInterval(pollCertStatus, 1000);
             }
@@ -621,7 +640,7 @@
           .catch(function(err) {
             certStageBadge.className = "status-badge status-badge-failed";
             certStageBadge.textContent = "提交失败";
-            certLogBox.textContent += "\n提交失败: " + err;
+            certLogBox.textContent += "\n提交失败: " + err.message;
           })
           .finally(function() {
             if (btn) btn.disabled = false;

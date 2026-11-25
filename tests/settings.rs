@@ -676,3 +676,64 @@ async fn settings_page_shows_cert_directory_and_files() {
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn request_cert_endpoint_with_urlencoded_and_json_accept() {
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+
+    // First configure domain and cf token in proxy settings
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/proxy")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "csrf={csrf}&enabled=true&listen_port=443&cert_mode=cf_dns&domain=test.example.com&cf_api_token=validtoken123"
+        )))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    // Test 1: Sending with multipart/form-data (what browser FormData produces) is rejected by CSRF middleware
+    let boundary = "---------------------------974767299852498929531610575";
+    let body_multipart = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"csrf\"\r\n\r\n{csrf}\r\n--{boundary}--\r\n"
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/proxy/request-cert")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header("accept", "application/json")
+        .body(Body::from(body_multipart))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Test 2: Sending with application/x-www-form-urlencoded is accepted
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/proxy/request-cert")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("accept", "application/json")
+        .body(Body::from(format!("csrf={csrf}")))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify polling endpoint works
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/settings/proxy/cert-status")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
