@@ -10,6 +10,10 @@ on:
     branches:
       - main
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   check-and-test:
     name: Test & Lint (Ubuntu)
@@ -22,15 +26,8 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry & target
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-ci-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-ci-${{ runner.os }}-
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Code formatting check
         run: cargo fmt --check
@@ -58,14 +55,10 @@ jobs:
       - name: Install cross
         uses: taiki-e/install-action@cross
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-cross-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-cross-${{ matrix.target }}-
+          key: cargo-cross-${{ matrix.target }}
 
       - name: Cross check for target
         run: cross check --target ${{ matrix.target }}

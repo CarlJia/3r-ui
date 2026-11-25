@@ -8,6 +8,12 @@ use crate::error::{AppError, AppResult};
 
 /// bcrypt work factor. Bumping this invalidates nothing — `verify` reads the
 /// cost out of the stored hash — so it can be raised later without a migration.
+///
+/// In debug / test builds, cost 4 (the bcrypt minimum) runs ~256x faster (~1ms),
+/// keeping the test suite fast. Release builds use cost 12 (~250ms).
+#[cfg(debug_assertions)]
+pub const BCRYPT_COST: u32 = 4;
+#[cfg(not(debug_assertions))]
 pub const BCRYPT_COST: u32 = 12;
 
 pub fn hash(password: &str) -> AppResult<String> {
