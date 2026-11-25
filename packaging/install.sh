@@ -6,8 +6,9 @@
 #   # 1. Install using precompiled binary from latest GitHub release:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
 #
-#   # 2. Install using a local uploaded binary or custom path (via argument):
+#   # 2. Install using a local uploaded binary (flags -s or direct path):
 #   bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh) -s /path/to/3r-ui-x86_64-unknown-linux-musl
+#   bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh) /path/to/3r-ui-x86_64-unknown-linux-musl
 #
 #   # 3. Or via LOCAL_BIN environment variable:
 #   LOCAL_BIN=/root/3r-ui-x86_64-unknown-linux-musl bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
@@ -112,15 +113,33 @@ mkdir -p "$CONF_DIR" "$DATA_DIR" "$LOG_DIR"
 chmod 750 "$CONF_DIR" "$DATA_DIR" "$LOG_DIR"
 
 # 6. Binary acquisition
-# Accepts argument $1 (or via `bash <(...) -s /path/to/bin`) or environment variable LOCAL_BIN
-LOCAL_BIN="${LOCAL_BIN:-${1:-}}"
+# Parse positional arguments or flags (-s/--source) or environment variable LOCAL_BIN
+LOCAL_BIN_CANDIDATE="${LOCAL_BIN:-}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s|--source)
+            if [[ -n "${2:-}" ]]; then
+                LOCAL_BIN_CANDIDATE="$2"
+                shift 2
+            else
+                shift 1
+            fi
+            ;;
+        *)
+            if [[ -z "$LOCAL_BIN_CANDIDATE" ]]; then
+                LOCAL_BIN_CANDIDATE="$1"
+            fi
+            shift 1
+            ;;
+    esac
+done
 
-if [[ -n "$LOCAL_BIN" ]]; then
-    if [[ ! -f "$LOCAL_BIN" ]]; then
-        error "Specified binary file does not exist: $LOCAL_BIN"
+if [[ -n "$LOCAL_BIN_CANDIDATE" ]]; then
+    if [[ ! -f "$LOCAL_BIN_CANDIDATE" ]]; then
+        error "Specified binary file does not exist: $LOCAL_BIN_CANDIDATE"
     fi
-    info "Using local binary file: $LOCAL_BIN"
-    cp -f "$LOCAL_BIN" "$INSTALL_DIR/3r-ui"
+    info "Using local binary file: $LOCAL_BIN_CANDIDATE"
+    cp -f "$LOCAL_BIN_CANDIDATE" "$INSTALL_DIR/3r-ui"
 elif [[ -f "./target/release/3r-ui" ]]; then
     info "Found workspace release binary at ./target/release/3r-ui"
     cp -f "./target/release/3r-ui" "$INSTALL_DIR/3r-ui"
