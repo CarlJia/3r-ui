@@ -28,7 +28,8 @@ impl AppConfig {
         // `/repos/XTLS/Xray-core/releases/...` and parses the release JSON.
         let xray_download_base = std::env::var("XRAY_DOWNLOAD_BASE")
             .unwrap_or_else(|_| "https://api.github.com".to_string());
-        let public_host = std::env::var("PUBLIC_HOST").unwrap_or_default();
+        let raw_public_host = std::env::var("PUBLIC_HOST").unwrap_or_default();
+        let public_host = raw_public_host.trim().to_string();
 
         // Per Assumptions: warn (not block) if binding to non-loopback.
         if !is_loopback_host(&bind_addr) {

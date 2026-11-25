@@ -77,8 +77,21 @@ pub async fn handle_subscription(
         }
     }
 
-    let host = if !state.config.public_host.is_empty() {
-        state.config.public_host.clone()
+    let raw_public_host = state.config.public_host.trim();
+    let host = if !raw_public_host.is_empty() {
+        if raw_public_host.starts_with("https://") {
+            raw_public_host
+                .trim_start_matches("https://")
+                .trim_matches('/')
+                .to_string()
+        } else if raw_public_host.starts_with("http://") {
+            raw_public_host
+                .trim_start_matches("http://")
+                .trim_matches('/')
+                .to_string()
+        } else {
+            raw_public_host.trim_matches('/').to_string()
+        }
     } else {
         let proxy_domain = crate::proxy::config::get_proxy_settings(&state.pool)
             .await

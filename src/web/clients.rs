@@ -422,20 +422,38 @@ pub async fn detail(
 
     let first_inbound = inbounds[0].clone();
 
-    let public_host = state.config.public_host.clone();
-    let warning = if public_host.is_empty() {
+    let raw_public_host = state.config.public_host.trim();
+    let warning = if raw_public_host.is_empty() {
         Some("尚未配置 PUBLIC_HOST 环境变量，链接中的 host 占位为示例地址，客户端无法直接使用。请在面板环境配置 PUBLIC_HOST 后重新打开此页面。".to_string())
     } else {
         None
     };
-    let host = if public_host.is_empty() {
-        "your-server.example.com".to_string()
+
+    // Determine scheme and bare host (stripping any accidental leading http:// or https://)
+    let (sub_scheme, bare_host) = if raw_public_host.starts_with("https://") {
+        (
+            "https",
+            raw_public_host
+                .trim_start_matches("https://")
+                .trim_matches('/'),
+        )
+    } else if raw_public_host.starts_with("http://") {
+        (
+            "http",
+            raw_public_host
+                .trim_start_matches("http://")
+                .trim_matches('/'),
+        )
+    } else if raw_public_host.is_empty() {
+        ("http", "your-server.example.com")
     } else {
-        public_host
+        ("http", raw_public_host.trim_matches('/'))
     };
 
+    let host = bare_host.to_string();
+
     let sub_token = client.sub_token.clone().unwrap_or_default();
-    let sub_url = format!("http://{host}/sub/{sub_token}");
+    let sub_url = format!("{sub_scheme}://{host}/sub/{sub_token}");
     let sub_qr_path = format!("/admin/clients/{id}/qr.png?sub=1");
 
     let nodes: Vec<ClientNodeCard> = inbounds
@@ -515,23 +533,36 @@ pub async fn qr_png(
         }
     };
 
+    let raw_config_host = state.config.public_host.trim();
+    let (sub_scheme, default_host) = if raw_config_host.starts_with("https://") {
+        (
+            "https",
+            raw_config_host
+                .trim_start_matches("https://")
+                .trim_matches('/'),
+        )
+    } else if raw_config_host.starts_with("http://") {
+        (
+            "http",
+            raw_config_host
+                .trim_start_matches("http://")
+                .trim_matches('/'),
+        )
+    } else if raw_config_host.is_empty() {
+        ("http", "your-server.example.com")
+    } else {
+        ("http", raw_config_host.trim_matches('/'))
+    };
+
     let host = params
         .get("host")
         .cloned()
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let h = state.config.public_host.clone();
-            if h.is_empty() {
-                None
-            } else {
-                Some(h)
-            }
-        })
-        .unwrap_or_else(|| "your-server.example.com".to_string());
+        .unwrap_or_else(|| default_host.to_string());
 
     let uri = if params.contains_key("sub") {
         let tok = client.sub_token.clone().unwrap_or_default();
-        format!("http://{host}/sub/{tok}")
+        format!("{sub_scheme}://{host}/sub/{tok}")
     } else if let Some(ib_id) = params.get("inbound_id").and_then(|s| s.parse::<i64>().ok()) {
         let inbound = match sqlx::query_as::<_, Inbound>(
             "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
