@@ -14,7 +14,7 @@ jobs:
     name: Run Tests & Checks
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -22,7 +22,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -51,7 +51,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             asset_name: 3r-ui-aarch64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -65,7 +65,7 @@ jobs:
           sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -89,7 +89,7 @@ jobs:
           sha256sum ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: |
@@ -114,12 +114,12 @@ jobs:
     needs: test-and-lint
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/Library/Caches/cargo
@@ -138,7 +138,7 @@ jobs:
           shasum -a 256 3r-ui-aarch64-apple-darwin.tar.gz > 3r-ui-aarch64-apple-darwin.tar.gz.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: 3r-ui-aarch64-apple-darwin
           path: |
