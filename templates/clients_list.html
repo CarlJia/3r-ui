@@ -99,7 +99,7 @@
       <div class="card-head">
         <h2>VLESS 用户</h2>
         {% if has_inbound %}
-        <a class="btn btn-primary" href="/admin/clients/new">添加用户</a>
+        <a class="btn btn-primary" href="{{ base_path }}/admin/clients/new">添加用户</a>
         {% endif %}
       </div>
       <p class="hint">每个用户对应一个 VLESS UUID，配额单位 GB；过期后将自动从 xray 配置中剔除。</p>
@@ -135,13 +135,13 @@
             </td>
             <td>
               <div class="row-actions">
-                <form method="post" action="/admin/clients/{{ c.base.id }}/toggle">
+                <form method="post" action="{{ base_path }}/admin/clients/{{ c.base.id }}/toggle">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button class="btn btn-secondary" type="submit">{% if c.base.active %}禁用{% else %}启用{% endif %}</button>
                 </form>
-                <a class="btn btn-secondary" href="/admin/clients/{{ c.base.id }}">详情</a>
-                <a class="btn btn-secondary" href="/admin/clients/{{ c.base.id }}/edit">编辑</a>
-                <form method="post" action="/admin/clients/{{ c.base.id }}/delete">
+                <a class="btn btn-secondary" href="{{ base_path }}/admin/clients/{{ c.base.id }}">详情</a>
+                <a class="btn btn-secondary" href="{{ base_path }}/admin/clients/{{ c.base.id }}/edit">编辑</a>
+                <form method="post" action="{{ base_path }}/admin/clients/{{ c.base.id }}/delete">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button class="btn btn-danger" type="submit">删除</button>
                 </form>

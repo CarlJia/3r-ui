@@ -3675,6 +3675,7 @@ dependencies = [
  "bcrypt",
  "fs2",
  "futures-util",
+ "http",
  "http-body-util",
  "image",
  "instant-acme",

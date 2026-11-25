@@ -74,7 +74,7 @@
   <div class="content">
   <header>
     <h1>{% if inbound.is_some() %}编辑入站{% else %}新建入站{% endif %}</h1>
-    <a href="/admin/inbound" class="btn btn-secondary">← 返回入站列表</a>
+    <a href="{{ base_path }}/admin/inbound" class="btn btn-secondary">← 返回入站列表</a>
   </header>
   <main>
     {% if let Some(err) = error %}
@@ -114,7 +114,7 @@
     <section class="card">
       <h2>{% if inbound.is_some() %}修改入站参数{% else %}配置新入站{% endif %}</h2>
       <p class="hint">支持 VLESS (REALITY + XHTTP) 与 Hysteria 2 (QUIC + TLS) 协议入站。</p>
-      <form method="post" action="{% match inbound %}{% when Some with (i) %}/admin/inbound/{{ i.id }}{% when None %}/admin/inbound{% endmatch %}">
+      <form method="post" action="{% match inbound %}{% when Some with (i) %}{{ base_path }}/admin/inbound/{{ i.id }}{% when None %}{{ base_path }}/admin/inbound{% endmatch %}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         {% match inbound %}
         {% when Some with (i) %}
@@ -251,7 +251,7 @@
 
         <div class="actions" style="margin-top:16px;">
           <button class="btn-primary" type="submit">保存并重载</button>
-          <a class="btn btn-secondary" href="/admin/inbound">返回列表</a>
+          <a class="btn btn-secondary" href="{{ base_path }}/admin/inbound">返回列表</a>
         </div>
       </form>
     </section>
@@ -260,7 +260,7 @@
     <section class="card">
       <h2>删除入站</h2>
       <p class="hint">删除后 xray 会立即停止监听该端口。</p>
-      <form method="post" action="/admin/inbound/{{ ib.id }}/delete" onsubmit="return confirm('确认删除该入站吗？删除后该端口将停止服务。');">
+      <form method="post" action="{{ base_path }}/admin/inbound/{{ ib.id }}/delete" onsubmit="return confirm('确认删除该入站吗？删除后该端口将停止服务。');">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <div class="actions">
           <button class="btn-danger" type="submit">删除入站</button>

@@ -170,6 +170,8 @@ impl ProxySupervisor {
         let key_str = key_file.to_str().unwrap_or_default().to_string();
         let upstream = self.upstream_addr.clone();
         let domain = settings.domain.clone();
+        let path = settings.normalized_path();
+        let sub_path = settings.normalized_sub_path();
         let listen_port = settings.listen_port;
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -187,7 +189,7 @@ impl ProxySupervisor {
                 };
                 server.bootstrap();
 
-                let proxy_service = PanelProxy::new(upstream, domain);
+                let proxy_service = PanelProxy::new(upstream, domain, path, sub_path);
                 let mut http_service = pingora_proxy::http_proxy_service(
                     &server.configuration,
                     proxy_service,

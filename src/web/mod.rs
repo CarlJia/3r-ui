@@ -77,6 +77,21 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/logs", get(logs::list))
         .route("/admin/logs/xray", get(logs::xray_logs_page))
         .route("/admin/logs/xray/raw", get(logs::xray_logs_raw))
+        .route("/admin/proxy", get(settings::proxy_page))
+        .route("/admin/proxy", post(settings::save_proxy_settings))
+        .route(
+            "/admin/proxy/request-cert",
+            post(settings::request_cert_now),
+        )
+        .route(
+            "/admin/proxy/cert-status",
+            get(settings::cert_request_status),
+        )
+        .route("/admin/proxy/certs", get(settings::certs_dir_json))
+        .route(
+            "/admin/proxy/certs/download",
+            get(settings::cert_file_download),
+        )
         .route("/admin/settings", get(settings::settings_page))
         .route("/admin/settings/proxy", post(settings::save_proxy_settings))
         .route(
@@ -106,6 +121,10 @@ pub fn router(state: AppState) -> Router {
     public
         .merge(admin)
         .fallback(auth::not_found)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::base_path_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

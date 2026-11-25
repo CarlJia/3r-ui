@@ -9,7 +9,7 @@ use crate::error::{AppError, AppResult};
 pub async fn get_proxy_settings(pool: &SqlitePool) -> AppResult<ProxySettings> {
     let settings = sqlx::query_as::<_, ProxySettings>(
         r#"
-        SELECT id, enabled, listen_port, domain, cert_mode, cf_api_token, cf_zone_id,
+        SELECT id, enabled, listen_port, domain, path, sub_path, cert_mode, cf_api_token, cf_zone_id,
                custom_cert_path, custom_key_path, cert_expires_at, last_renewed_at,
                last_error, updated_at
         FROM proxy_settings
@@ -25,8 +25,8 @@ pub async fn get_proxy_settings(pool: &SqlitePool) -> AppResult<ProxySettings> {
         None => {
             sqlx::query(
                 r#"
-                INSERT OR IGNORE INTO proxy_settings (id, enabled, listen_port, domain, cert_mode)
-                VALUES (1, 0, 8443, '', 'cf_dns')
+                INSERT OR IGNORE INTO proxy_settings (id, enabled, listen_port, domain, path, sub_path, cert_mode)
+                VALUES (1, 0, 8443, '', '', '/sub', 'cf_dns')
                 "#,
             )
             .execute(pool)
@@ -35,7 +35,7 @@ pub async fn get_proxy_settings(pool: &SqlitePool) -> AppResult<ProxySettings> {
 
             sqlx::query_as::<_, ProxySettings>(
                 r#"
-                SELECT id, enabled, listen_port, domain, cert_mode, cf_api_token, cf_zone_id,
+                SELECT id, enabled, listen_port, domain, path, sub_path, cert_mode, cf_api_token, cf_zone_id,
                        custom_cert_path, custom_key_path, cert_expires_at, last_renewed_at,
                        last_error, updated_at
                 FROM proxy_settings
@@ -56,6 +56,8 @@ pub async fn update_proxy_settings(
     enabled: bool,
     listen_port: u16,
     domain: &str,
+    path: &str,
+    sub_path: &str,
     cert_mode: &str,
     cf_api_token: Option<&str>,
     cf_zone_id: Option<&str>,
@@ -73,12 +75,17 @@ pub async fn update_proxy_settings(
         .map(|z| z.trim().to_string())
         .unwrap_or(current.cf_zone_id);
 
+    let clean_path = crate::db::models::normalize_panel_path(path);
+    let clean_sub_path = crate::db::models::normalize_sub_path(sub_path);
+
     sqlx::query(
         r#"
         UPDATE proxy_settings
         SET enabled = ?,
             listen_port = ?,
             domain = ?,
+            path = ?,
+            sub_path = ?,
             cert_mode = ?,
             cf_api_token = ?,
             cf_zone_id = ?,
@@ -91,6 +98,8 @@ pub async fn update_proxy_settings(
     .bind(if enabled { 1 } else { 0 })
     .bind(listen_port as i64)
     .bind(domain.trim())
+    .bind(clean_path)
+    .bind(clean_sub_path)
     .bind(cert_mode.trim())
     .bind(token_to_save)
     .bind(zone_to_save)
@@ -141,6 +150,8 @@ mod tests {
             enabled: 1,
             listen_port: 8443,
             domain: "example.com".into(),
+            path: "".into(),
+            sub_path: "/sub".into(),
             cert_mode: "cf_dns".into(),
             cf_api_token: "sk-1234567890abcdef".into(),
             cf_zone_id: "".into(),
@@ -170,6 +181,8 @@ mod tests {
         assert_eq!(initial.id, 1);
         assert_eq!(initial.enabled, 0);
         assert_eq!(initial.listen_port, 8443);
+        assert_eq!(initial.path, "");
+        assert_eq!(initial.sub_path, "/sub");
         assert_eq!(initial.cert_mode, "cf_dns");
 
         // 更新配置
@@ -178,6 +191,8 @@ mod tests {
             true,
             9443,
             "panel.example.com",
+            "/xxjjye",
+            "/mysub",
             "cf_dns",
             Some("sk-secret-token-123"),
             Some("zone-abc"),
@@ -190,6 +205,8 @@ mod tests {
         assert_eq!(updated.enabled, 1);
         assert_eq!(updated.listen_port, 9443);
         assert_eq!(updated.domain, "panel.example.com");
+        assert_eq!(updated.path, "/xxjjye");
+        assert_eq!(updated.sub_path, "/mysub");
         assert_eq!(updated.cf_api_token, "sk-secret-token-123");
         assert_eq!(updated.cf_zone_id, "zone-abc");
 
@@ -199,6 +216,8 @@ mod tests {
             true,
             9443,
             "panel.example.com",
+            "xxjjye/",
+            "mysub/",
             "cf_dns",
             Some("sk-****-123"),
             None,
@@ -208,6 +227,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(masked_update.cf_api_token, "sk-secret-token-123");
+        assert_eq!(masked_update.path, "/xxjjye");
+        assert_eq!(masked_update.sub_path, "/mysub");
 
         // 更新证书状态
         update_cert_status(&pool, Some(1735689600), Some(1730000000), None)

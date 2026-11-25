@@ -1,20 +1,23 @@
 <aside class="sidebar" aria-label="后台导航">
-  <a class="brand" href="/admin">3R-UI</a>
+  <a class="brand" href="{{ base_path }}/admin">3R-UI</a>
   <p class="nav-label">管理</p>
   <nav aria-label="主菜单">
-    <a class="nav-link {% if nav_active == "dashboard" %}active{% endif %}" {% if nav_active == "dashboard" %}aria-current="page"{% endif %} href="/admin">
+    <a class="nav-link {% if nav_active == "dashboard" %}active{% endif %}" {% if nav_active == "dashboard" %}aria-current="page"{% endif %} href="{{ base_path }}/admin">
       <span class="nav-icon">📊</span><span>控制台</span>
     </a>
-    <a class="nav-link {% if nav_active == "inbound" %}active{% endif %}" {% if nav_active == "inbound" %}aria-current="page"{% endif %} href="/admin/inbound">
+    <a class="nav-link {% if nav_active == "inbound" %}active{% endif %}" {% if nav_active == "inbound" %}aria-current="page"{% endif %} href="{{ base_path }}/admin/inbound">
       <span class="nav-icon">⚡</span><span>入站列表</span>
     </a>
-    <a class="nav-link {% if nav_active == "clients" %}active{% endif %}" {% if nav_active == "clients" %}aria-current="page"{% endif %} href="/admin/clients">
+    <a class="nav-link {% if nav_active == "clients" %}active{% endif %}" {% if nav_active == "clients" %}aria-current="page"{% endif %} href="{{ base_path }}/admin/clients">
       <span class="nav-icon">👥</span><span>用户列表</span>
     </a>
-    <a class="nav-link {% if nav_active == "logs" || nav_active == "xray_logs" %}active{% endif %}" {% if nav_active == "logs" || nav_active == "xray_logs" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="/admin/logs">
+    <a class="nav-link {% if nav_active == "logs" || nav_active == "xray_logs" %}active{% endif %}" {% if nav_active == "logs" || nav_active == "xray_logs" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="{{ base_path }}/admin/logs">
       <span class="nav-icon">📋</span><span>日志记录</span>
     </a>
-    <a class="nav-link {% if nav_active == "settings" %}active{% endif %}" {% if nav_active == "settings" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="/admin/settings">
+    <a class="nav-link {% if nav_active == "proxy" %}active{% endif %}" {% if nav_active == "proxy" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="{{ base_path }}/admin/proxy">
+      <span class="nav-icon">🌐</span><span>反向代理与证书</span>
+    </a>
+    <a class="nav-link {% if nav_active == "settings" %}active{% endif %}" {% if nav_active == "settings" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="{{ base_path }}/admin/settings">
       <span class="nav-icon">⚙️</span><span>系统设置</span>
     </a>
   </nav>

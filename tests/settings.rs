@@ -579,10 +579,10 @@ async fn save_proxy_settings_and_mask_token() {
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
-    // 2. Fetch settings page and verify rendered values
+    // 2. Fetch proxy page and verify rendered values
     let req = Request::builder()
         .method("GET")
-        .uri("/admin/settings")
+        .uri("/admin/proxy")
         .header("cookie", format!("session={session}; csrf={csrf}"))
         .body(Body::empty())
         .unwrap();
@@ -618,7 +618,7 @@ async fn settings_page_shows_cert_directory_and_files() {
     // 1. Check HTML page renders cert directory
     let req = Request::builder()
         .method("GET")
-        .uri("/admin/settings")
+        .uri("/admin/proxy")
         .header("cookie", format!("session={session}; csrf={csrf}"))
         .body(Body::empty())
         .unwrap();

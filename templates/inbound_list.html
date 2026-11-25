@@ -75,7 +75,7 @@
   <div class="content">
   <header>
     <h1>入站列表</h1>
-    <a href="/admin/inbound/new" class="btn btn-primary">+ 添加新入站</a>
+    <a href="{{ base_path }}/admin/inbound/new" class="btn btn-primary">+ 添加新入站</a>
   </header>
   <main>
     {% if let Some(err) = error %}
@@ -86,7 +86,7 @@
       {% if inbounds.is_empty() %}
       <div class="empty-state">
         <p>尚未配置任何入站协议</p>
-        <a href="/admin/inbound/new" class="btn btn-primary">+ 立即添加入站</a>
+        <a href="{{ base_path }}/admin/inbound/new" class="btn btn-primary">+ 立即添加入站</a>
       </div>
       {% else %}
       <table>
@@ -130,12 +130,12 @@
             </td>
             <td style="text-align:right;">
               <div class="actions" style="justify-content: flex-end;">
-                <form method="post" action="/admin/inbound/{{ ib.id }}/toggle" style="display:inline;">
+                <form method="post" action="{{ base_path }}/admin/inbound/{{ ib.id }}/toggle" style="display:inline;">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button type="submit" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;">{% if ib.is_active %}禁用{% else %}启用{% endif %}</button>
                 </form>
-                <a href="/admin/inbound/{{ ib.id }}/edit" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;">编辑</a>
-                <form method="post" action="/admin/inbound/{{ ib.id }}/delete" style="display:inline;" onsubmit="return confirm('确认删除端口 {{ ib.listen_port }} 的入站吗？删除后该端口将停止服务。');">
+                <a href="{{ base_path }}/admin/inbound/{{ ib.id }}/edit" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;">编辑</a>
+                <form method="post" action="{{ base_path }}/admin/inbound/{{ ib.id }}/delete" style="display:inline;" onsubmit="return confirm('确认删除端口 {{ ib.listen_port }} 的入站吗？删除后该端口将停止服务。');">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button type="submit" class="btn btn-danger" style="padding: 4px 10px; font-size: 12px;">删除</button>
                 </form>

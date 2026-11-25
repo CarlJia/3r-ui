@@ -10,7 +10,7 @@ use rand::RngCore;
 
 use crate::crypto::reality::generate_keypair;
 use crate::db::models::Inbound;
-use crate::web::middleware::{csrf_from_cookies, CurrentAdmin, SECURITY_HEADERS};
+use crate::web::middleware::{csrf_from_cookies, BasePath, CurrentAdmin, SECURITY_HEADERS};
 use crate::web::AppState;
 use crate::xray::config;
 use crate::xray::validate::{
@@ -24,6 +24,7 @@ struct InboundListTemplate {
     csrf: String,
     inbounds: Vec<InboundView>,
     error: Option<String>,
+    base_path: String,
 }
 
 #[derive(Template)]
@@ -41,6 +42,7 @@ struct InboundFormTemplate {
     /// without a server round-trip.
     default_xhttp_path: String,
     error: Option<String>,
+    base_path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -162,20 +164,26 @@ pub struct DeleteInboundForm {
 pub async fn list(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     if query.contains_key("new") {
-        return decorate(
-            Redirect::to("/admin/inbound/new").into_response(),
-            Some(&jar),
-        );
+        let target = if base_path.is_empty() {
+            "/admin/inbound/new".to_string()
+        } else {
+            format!("{base_path}/admin/inbound/new")
+        };
+        return decorate(Redirect::to(&target).into_response(), Some(&jar));
     }
     if let Some(id) = query.get("id") {
-        return decorate(
-            Redirect::to(&format!("/admin/inbound/{id}/edit")).into_response(),
-            Some(&jar),
-        );
+        let target = if base_path.is_empty() {
+            format!("/admin/inbound/{id}/edit")
+        } else {
+            format!("{base_path}/admin/inbound/{id}/edit")
+        };
+        return decorate(Redirect::to(&target).into_response(), Some(&jar));
     }
 
     let all = list_inbounds(&state.pool).await.unwrap_or_default();
@@ -185,6 +193,7 @@ pub async fn list(
         csrf: csrf_from_cookies(&jar),
         inbounds,
         error: None,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -198,8 +207,10 @@ pub use list as show;
 pub async fn new_form(
     State(_state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let default_short_id = random_short_id();
     let default_xhttp_path = generate_xhttp_path();
     let html = InboundFormTemplate {
@@ -208,6 +219,7 @@ pub async fn new_form(
         default_short_id,
         default_xhttp_path,
         error: None,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -218,13 +230,20 @@ pub async fn new_form(
 pub async fn edit_form(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     Path(id): Path<i64>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let all = list_inbounds(&state.pool).await.unwrap_or_default();
     let target = all.into_iter().find(|i| i.id == id);
     let Some(inbound) = target else {
-        return decorate(Redirect::to("/admin/inbound").into_response(), Some(&jar));
+        let target = if base_path.is_empty() {
+            "/admin/inbound".to_string()
+        } else {
+            format!("{base_path}/admin/inbound")
+        };
+        return decorate(Redirect::to(&target).into_response(), Some(&jar));
     };
 
     let default_short_id = random_short_id();
@@ -235,6 +254,7 @@ pub async fn edit_form(
         default_short_id,
         default_xhttp_path,
         error: None,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -245,22 +265,26 @@ pub async fn edit_form(
 pub async fn save(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<InboundForm>,
 ) -> Response {
-    handle_save(state, jar, form.id, form).await
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
+    handle_save(state, jar, form.id, form, &base_path).await
 }
 
 /// `POST /admin/inbound/:id` — update an inbound by ID.
 pub async fn update(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     Path(id): Path<i64>,
     axum::extract::Form(mut form): axum::extract::Form<InboundForm>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     form.id = Some(id);
-    handle_save(state, jar, Some(id), form).await
+    handle_save(state, jar, Some(id), form, &base_path).await
 }
 
 async fn handle_save(
@@ -268,6 +292,7 @@ async fn handle_save(
     jar: CookieJar,
     target_id: Option<i64>,
     form: InboundForm,
+    base_path: &str,
 ) -> Response {
     let all = list_inbounds(&state.pool).await.unwrap_or_default();
     let is_new_action = form.action.as_deref() == Some("new");
@@ -292,6 +317,7 @@ async fn handle_save(
                 &jar,
                 existing.as_ref(),
                 "端口必须是 1-65535 之间的整数".into(),
+                base_path,
             )
             .await
         }
@@ -334,10 +360,16 @@ async fn handle_save(
     } else if is_hy2 {
         let sni = form.sni.trim().to_string();
         if sni.is_empty() {
-            return render_error(&jar, existing.as_ref(), "SNI 不能为空".into()).await;
+            return render_error(&jar, existing.as_ref(), "SNI 不能为空".into(), base_path).await;
         }
         if sni.len() > 253 || sni.contains(char::is_whitespace) {
-            return render_error(&jar, existing.as_ref(), "SNI 必须是合法主机名".into()).await;
+            return render_error(
+                &jar,
+                existing.as_ref(),
+                "SNI 必须是合法主机名".into(),
+                base_path,
+            )
+            .await;
         }
 
         let custom_cert_path = form.custom_cert_path.trim().to_string();
@@ -348,6 +380,7 @@ async fn handle_save(
                     &jar,
                     existing.as_ref(),
                     "自定义证书模式必须填写证书和私钥路径".into(),
+                    base_path,
                 )
                 .await;
             }
@@ -358,6 +391,7 @@ async fn handle_save(
                     &jar,
                     existing.as_ref(),
                     "指定的证书文件或私钥文件不存在，请检查路径".into(),
+                    base_path,
                 )
                 .await;
             }
@@ -388,19 +422,27 @@ async fn handle_save(
     } else {
         let dest = match validate_dest(&form.dest).await {
             Ok(d) => d,
-            Err(e) => return render_error(&jar, existing.as_ref(), format!("{e}")).await,
+            Err(e) => {
+                return render_error(&jar, existing.as_ref(), format!("{e}"), base_path).await
+            }
         };
 
         let sni = form.sni.trim().to_string();
         if sni.is_empty() {
-            return render_error(&jar, existing.as_ref(), "SNI 不能为空".into()).await;
+            return render_error(&jar, existing.as_ref(), "SNI 不能为空".into(), base_path).await;
         }
         if sni.len() > 253 || sni.contains(char::is_whitespace) {
-            return render_error(&jar, existing.as_ref(), "SNI 必须是合法主机名".into()).await;
+            return render_error(
+                &jar,
+                existing.as_ref(),
+                "SNI 必须是合法主机名".into(),
+                base_path,
+            )
+            .await;
         }
 
         if let Err(msg) = validate_short_id(&form.short_id) {
-            return render_error(&jar, existing.as_ref(), msg).await;
+            return render_error(&jar, existing.as_ref(), msg, base_path).await;
         }
         let short_id = form.short_id.trim().to_string();
 
@@ -412,7 +454,7 @@ async fn handle_save(
                 .unwrap_or_else(generate_xhttp_path)
         } else {
             if let Err(msg) = validate_xhttp_path(submitted_path) {
-                return render_error(&jar, existing.as_ref(), msg).await;
+                return render_error(&jar, existing.as_ref(), msg, base_path).await;
             }
             submitted_path.to_string()
         };
@@ -421,7 +463,8 @@ async fn handle_save(
             Ok(k) => k,
             Err(e) => {
                 tracing::error!(error = %e, "REALITY key generation failed");
-                return render_error(&jar, existing.as_ref(), "密钥生成失败".into()).await;
+                return render_error(&jar, existing.as_ref(), "密钥生成失败".into(), base_path)
+                    .await;
             }
         };
 
@@ -466,7 +509,13 @@ async fn handle_save(
         .unwrap_or(0);
 
         if port_in_use > 0 {
-            return render_error(&jar, existing.as_ref(), format!("端口 {port} 已被占用")).await;
+            return render_error(
+                &jar,
+                existing.as_ref(),
+                format!("端口 {port} 已被占用"),
+                base_path,
+            )
+            .await;
         }
     }
 
@@ -539,20 +588,22 @@ async fn handle_save(
             tracing::error!(error = %e, "inbound save failed");
             "保存失败".to_string()
         };
-        return render_error(&jar, existing.as_ref(), msg).await;
+        return render_error(&jar, existing.as_ref(), msg, base_path).await;
     }
 
     reload(&state).await;
-    redirect_to_inbound(&jar)
+    redirect_to_inbound(&jar, base_path)
 }
 
 /// `POST /admin/inbound/:id/delete` — soft-delete an inbound by ID.
 pub async fn delete_by_id(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     Path(id): Path<i64>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let _ = sqlx::query(
         "UPDATE inbounds SET status = 'deleted', updated_at = unixepoch() WHERE id = ?",
     )
@@ -561,16 +612,18 @@ pub async fn delete_by_id(
     .await;
 
     reload(&state).await;
-    redirect_to_inbound(&jar)
+    redirect_to_inbound(&jar, &base_path)
 }
 
 /// `POST /admin/inbound/delete` — soft-delete the inbound (by ID from form, or first active).
 pub async fn delete(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<DeleteInboundForm>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     if let Some(id) = form.id {
         let _ = sqlx::query(
             "UPDATE inbounds SET status = 'deleted', updated_at = unixepoch() WHERE id = ?",
@@ -587,19 +640,21 @@ pub async fn delete(
         .await;
     }
     reload(&state).await;
-    redirect_to_inbound(&jar)
+    redirect_to_inbound(&jar, &base_path)
 }
 
 /// `POST /admin/inbound/:id/toggle` — toggle an inbound between active and disabled.
 pub async fn toggle(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     Path(id): Path<i64>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let inbounds = list_inbounds(&state.pool).await.unwrap_or_default();
     let Some(ib) = inbounds.into_iter().find(|i| i.id == id) else {
-        return redirect_to_inbound(&jar);
+        return redirect_to_inbound(&jar, &base_path);
     };
 
     if ib.status == "active" {
@@ -625,7 +680,7 @@ pub async fn toggle(
                 port = ib.listen_port,
                 "cannot activate inbound: port in use"
             );
-            return redirect_to_inbound(&jar);
+            return redirect_to_inbound(&jar, &base_path);
         }
 
         let _ = sqlx::query(
@@ -637,7 +692,7 @@ pub async fn toggle(
     }
 
     reload(&state).await;
-    redirect_to_inbound(&jar)
+    redirect_to_inbound(&jar, &base_path)
 }
 
 async fn list_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<Inbound>> {
@@ -645,7 +700,7 @@ async fn list_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<I
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
-         FROM inbounds WHERE status != 'deleted' ORDER BY id ASC",
+          FROM inbounds WHERE status != 'deleted' ORDER BY id ASC",
     )
     .fetch_all(pool)
     .await
@@ -658,7 +713,7 @@ async fn list_active_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResul
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
-         FROM inbounds WHERE status = 'active' ORDER BY id ASC",
+          FROM inbounds WHERE status = 'active' ORDER BY id ASC",
     )
     .fetch_all(pool)
     .await
@@ -683,7 +738,12 @@ async fn reload(state: &AppState) {
         .await;
 }
 
-async fn render_error(jar: &CookieJar, inbound: Option<&Inbound>, error: String) -> Response {
+async fn render_error(
+    jar: &CookieJar,
+    inbound: Option<&Inbound>,
+    error: String,
+    base_path: &str,
+) -> Response {
     let default_short_id = inbound
         .map(|i| i.short_id.clone())
         .unwrap_or_else(random_short_id);
@@ -696,6 +756,7 @@ async fn render_error(jar: &CookieJar, inbound: Option<&Inbound>, error: String)
         default_short_id,
         default_xhttp_path,
         error: Some(error),
+        base_path: base_path.to_string(),
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -715,8 +776,13 @@ fn random_short_id() -> String {
 }
 
 /// 303 back to the inbound page, carrying `jar`'s Set-Cookie values.
-fn redirect_to_inbound(jar: &CookieJar) -> Response {
-    decorate(Redirect::to("/admin/inbound").into_response(), Some(jar))
+fn redirect_to_inbound(jar: &CookieJar, base_path: &str) -> Response {
+    let target = if base_path.is_empty() {
+        "/admin/inbound".to_string()
+    } else {
+        format!("{base_path}/admin/inbound")
+    };
+    decorate(Redirect::to(&target).into_response(), Some(jar))
 }
 
 /// Render a page with the standard security headers and any Set-Cookie
