@@ -13,10 +13,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "1"
 
 jobs:
-  check-and-test:
-    name: Test & Lint (Ubuntu)
+  lint:
+    name: Lint & Format (Ubuntu)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -28,12 +30,28 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-lint
 
       - name: Code formatting check
         run: cargo fmt --check
 
       - name: Clippy check
         run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Run Tests (Ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cargo-test
 
       - name: Run unit & integration tests
         run: cargo test
