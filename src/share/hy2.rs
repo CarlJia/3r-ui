@@ -3,7 +3,7 @@
 //! Format (per Hysteria 2 URI specification & modern client extensions):
 //!   `hysteria2://<auth>@<host>:<port>/?sni=<sni>&insecure=0&udp=1#<name>`
 //!   or with skip-cert-verify:
-//!   `hysteria2://<auth>@<host>:<port>/?sni=<sni>&insecure=1&skip-cert-verify=1&udp=1#<name>`
+//!   `hysteria2://<auth>@<host>:<port>/?sni=<sni>&insecure=1&udp=1#<name>`
 
 use crate::db::models::{Client, Inbound};
 
@@ -22,9 +22,6 @@ pub fn build_uri(client: &Client, inbound: &Inbound, host: &str) -> String {
     let udp = if inbound.udp == 1 { 1 } else { 0 };
 
     let mut params = vec![format!("sni={encoded_sni}"), format!("insecure={insecure}")];
-    if insecure == 1 {
-        params.push("skip-cert-verify=1".to_string());
-    }
     if udp == 1 {
         params.push("udp=1".to_string());
     }
@@ -135,7 +132,7 @@ mod tests {
             "panel.example.com",
         );
         assert!(uri.contains("insecure=1"));
-        assert!(uri.contains("skip-cert-verify=1"));
+        assert!(!uri.contains("skip-cert-verify"));
         assert!(uri.contains("udp=1"));
     }
 

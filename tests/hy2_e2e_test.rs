@@ -255,7 +255,7 @@ async fn multi_protocol_inbound_and_client_binding() {
     )
     .unwrap();
     assert!(decoded.contains("insecure=1"));
-    assert!(decoded.contains("skip-cert-verify=1"));
+    assert!(!decoded.contains("skip-cert-verify"));
     assert!(decoded.contains("udp=1"));
 
     // 7. Update Client to bind to BOTH inbounds
