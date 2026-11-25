@@ -736,4 +736,3 @@ async fn request_cert_endpoint_with_urlencoded_and_json_accept() {
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
-

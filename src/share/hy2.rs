@@ -21,10 +21,7 @@ pub fn build_uri(client: &Client, inbound: &Inbound, host: &str) -> String {
     let insecure = if inbound.skip_cert_verify == 1 { 1 } else { 0 };
     let udp = if inbound.udp == 1 { 1 } else { 0 };
 
-    let mut params = vec![
-        format!("sni={encoded_sni}"),
-        format!("insecure={insecure}"),
-    ];
+    let mut params = vec![format!("sni={encoded_sni}"), format!("insecure={insecure}")];
     if insecure == 1 {
         params.push("skip-cert-verify=1".to_string());
     }

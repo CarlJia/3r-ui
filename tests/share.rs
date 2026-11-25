@@ -390,7 +390,8 @@ async fn hy2_share_uri_generation() {
     // Test with skip_cert_verify=1
     let mut ib_insecure = inbound.clone();
     ib_insecure.skip_cert_verify = 1;
-    let uri_insecure = three_r_ui::share::hy2::build_uri(&client, &ib_insecure, "panel.example.com");
+    let uri_insecure =
+        three_r_ui::share::hy2::build_uri(&client, &ib_insecure, "panel.example.com");
     assert!(uri_insecure.contains("insecure=1"));
     assert!(uri_insecure.contains("skip-cert-verify=1"));
     assert!(uri_insecure.contains("udp=1"));
