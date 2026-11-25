@@ -3,10 +3,14 @@
 # 3R-UI Installer for Debian & Ubuntu (x86_64 / arm64)
 #
 # Usage:
-#   # Install using precompiled binary or latest release:
+#   # 1. Install using precompiled binary from latest GitHub release:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
-#   # Or install from a local binary:
-#   sudo bash packaging/install.sh ./target/release/3r-ui
+#
+#   # 2. Install using a local uploaded binary or custom path (via argument):
+#   bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh) -s /path/to/3r-ui-x86_64-unknown-linux-musl
+#
+#   # 3. Or via LOCAL_BIN environment variable:
+#   LOCAL_BIN=/root/3r-ui-x86_64-unknown-linux-musl bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
 #
 
 set -euo pipefail
@@ -108,14 +112,24 @@ mkdir -p "$CONF_DIR" "$DATA_DIR" "$LOG_DIR"
 chmod 750 "$CONF_DIR" "$DATA_DIR" "$LOG_DIR"
 
 # 6. Binary acquisition
-LOCAL_BIN="${1:-}"
+# Accepts argument $1 (or via `bash <(...) -s /path/to/bin`) or environment variable LOCAL_BIN
+LOCAL_BIN="${LOCAL_BIN:-${1:-}}"
 
-if [[ -n "$LOCAL_BIN" && -f "$LOCAL_BIN" ]]; then
-    info "Using local binary: $LOCAL_BIN"
+if [[ -n "$LOCAL_BIN" ]]; then
+    if [[ ! -f "$LOCAL_BIN" ]]; then
+        error "Specified binary file does not exist: $LOCAL_BIN"
+    fi
+    info "Using local binary file: $LOCAL_BIN"
     cp -f "$LOCAL_BIN" "$INSTALL_DIR/3r-ui"
 elif [[ -f "./target/release/3r-ui" ]]; then
     info "Found workspace release binary at ./target/release/3r-ui"
     cp -f "./target/release/3r-ui" "$INSTALL_DIR/3r-ui"
+elif [[ -f "./3r-ui" ]]; then
+    info "Found binary in current working directory: ./3r-ui"
+    cp -f "./3r-ui" "$INSTALL_DIR/3r-ui"
+elif [[ -f "./3r-ui-${RUST_TARGET}" ]]; then
+    info "Found matched target binary in current working directory: ./3r-ui-${RUST_TARGET}"
+    cp -f "./3r-ui-${RUST_TARGET}" "$INSTALL_DIR/3r-ui"
 else
     info "Fetching latest release binary for $TARGET_ARCH from GitHub..."
     GITHUB_REPO="CarlJia/3r-ui"

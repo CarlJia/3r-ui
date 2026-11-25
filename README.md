@@ -14,6 +14,16 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
 ```
 
+> **提示（指定本地上传的二进制文件）**：
+> 如果您已将 GitHub Actions 构建生成的制品（例如 `3r-ui-x86_64-unknown-linux-musl`）手动上传到了 VPS 上（如 `/root/3r-ui-x86_64-unknown-linux-musl`），可以通过以下任一方式直接指定安装该文件：
+> ```bash
+> # 方式 A：通过参数传递 (推荐)
+> bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh) -s /root/3r-ui-x86_64-unknown-linux-musl
+> 
+> # 方式 B：通过环境变量指定
+> LOCAL_BIN=/root/3r-ui-x86_64-unknown-linux-musl bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
+> ```
+
 脚本将自动完成：
 1. 识别系统发行版与硬件架构（x86_64 / aarch64）。
 2. 从 GitHub Releases 下载适配的预编译二进制并安装至 `/usr/local/bin/3r-ui`。
