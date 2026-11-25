@@ -1,7 +1,7 @@
 //! Mieru core auto-download and install.
 
-use std::path::{Path, PathBuf};
 use crate::error::{AppError, AppResult};
+use std::path::{Path, PathBuf};
 
 pub fn asset_suffix_for(os: &str, arch: &str) -> AppResult<&'static str> {
     let suffix = match (os, arch) {
@@ -81,7 +81,10 @@ mod tests {
     fn test_asset_suffix_mapping() {
         assert_eq!(asset_suffix_for("linux", "x86_64").unwrap(), "linux_amd64");
         assert_eq!(asset_suffix_for("linux", "aarch64").unwrap(), "linux_arm64");
-        assert_eq!(asset_suffix_for("macos", "aarch64").unwrap(), "darwin_arm64");
+        assert_eq!(
+            asset_suffix_for("macos", "aarch64").unwrap(),
+            "darwin_arm64"
+        );
         assert!(asset_suffix_for("freebsd", "mips").is_err());
     }
 

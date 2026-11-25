@@ -633,7 +633,8 @@ async fn inbound_page_shows_the_public_key_after_creation() {
             .fetch_one(&h.pool)
             .await
             .unwrap();
-    let html = body_text(get(&h, &format!("/admin/inbound/{inbound_id}/edit"), &session).await).await;
+    let html =
+        body_text(get(&h, &format!("/admin/inbound/{inbound_id}/edit"), &session).await).await;
     assert!(html.contains(&public_key), "public key should be displayed");
     assert!(html.contains("8443"), "port should be prefilled");
 
@@ -679,7 +680,14 @@ async fn inbound_toggle_enables_and_disables() {
     assert_eq!(status, "active");
 
     // Toggle to disable
-    let resp = post(&h, &format!("/admin/inbound/{inbound_id}/toggle"), &session, &csrf, "").await;
+    let resp = post(
+        &h,
+        &format!("/admin/inbound/{inbound_id}/toggle"),
+        &session,
+        &csrf,
+        "",
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
     let status: String = sqlx::query_scalar("SELECT status FROM inbounds WHERE id = ?")
@@ -694,7 +702,14 @@ async fn inbound_toggle_enables_and_disables() {
     assert!(html.contains("启用"));
 
     // Toggle back to active
-    let resp = post(&h, &format!("/admin/inbound/{inbound_id}/toggle"), &session, &csrf, "").await;
+    let resp = post(
+        &h,
+        &format!("/admin/inbound/{inbound_id}/toggle"),
+        &session,
+        &csrf,
+        "",
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
     let status: String = sqlx::query_scalar("SELECT status FROM inbounds WHERE id = ?")

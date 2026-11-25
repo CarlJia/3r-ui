@@ -1,8 +1,8 @@
 //! Mieru server configuration generator.
 
-use std::path::Path;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::path::Path;
 
 use crate::db::models::{Client, Inbound};
 use crate::error::{AppError, AppResult};
@@ -70,7 +70,11 @@ pub async fn generate_config(pool: &SqlitePool) -> AppResult<Option<MieruServerC
     // 1. Port bindings
     for ib in &inbounds {
         let protocols: Vec<&str> = if ib.transport_protocol.contains(',') {
-            ib.transport_protocol.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect()
+            ib.transport_protocol
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect()
         } else if !ib.transport_protocol.trim().is_empty() {
             vec![ib.transport_protocol.trim()]
         } else {
@@ -111,11 +115,13 @@ pub async fn generate_config(pool: &SqlitePool) -> AppResult<Option<MieruServerC
     .map_err(AppError::Database)?;
 
     for c in clients {
-        let username = c.mieru_username
+        let username = c
+            .mieru_username
             .filter(|s| !s.trim().is_empty())
             .or_else(|| c.name.clone().filter(|s| !s.trim().is_empty()))
             .unwrap_or_else(|| format!("user_{}", &c.uuid[..8.min(c.uuid.len())]));
-        let password = c.mieru_password
+        let password = c
+            .mieru_password
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| c.uuid.clone());
 
@@ -141,10 +147,12 @@ pub async fn generate_config(pool: &SqlitePool) -> AppResult<Option<MieruServerC
         .map_err(AppError::Database)?;
 
         for c in legacy_clients {
-            let username = c.mieru_username
+            let username = c
+                .mieru_username
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| format!("user_{}", &c.uuid[..8.min(c.uuid.len())]));
-            let password = c.mieru_password
+            let password = c
+                .mieru_password
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| c.uuid.clone());
             config.users.push(MieruUser {

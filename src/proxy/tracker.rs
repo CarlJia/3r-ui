@@ -1,10 +1,10 @@
 //! In-memory status and log tracking for ACME certificate requests.
 
+use crate::crypto::session::now_unix;
+use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde::Serialize;
-use crate::crypto::session::now_unix;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub enum CertRequestStage {

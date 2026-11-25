@@ -160,8 +160,10 @@ impl SystemTracker {
                     *guard = Some((now, net_total_in_bytes, net_total_out_bytes));
                     let dt = now.duration_since(prev_time).as_secs_f64();
                     if dt > 0.1 {
-                        let rx_rate = (net_total_in_bytes.saturating_sub(prev_rx) as f64 / dt) as u64;
-                        let tx_rate = (net_total_out_bytes.saturating_sub(prev_tx) as f64 / dt) as u64;
+                        let rx_rate =
+                            (net_total_in_bytes.saturating_sub(prev_rx) as f64 / dt) as u64;
+                        let tx_rate =
+                            (net_total_out_bytes.saturating_sub(prev_tx) as f64 / dt) as u64;
                         (rx_rate, tx_rate)
                     } else {
                         (0, 0)

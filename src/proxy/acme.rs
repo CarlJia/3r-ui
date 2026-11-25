@@ -82,7 +82,10 @@ pub async fn request_certificate(
             }
             Err(e) => {
                 if let Some(t) = tracker {
-                    t.failure(&format!("无法找到域名 {clean_domain} 的 Cloudflare Zone: {e}")).await;
+                    t.failure(&format!(
+                        "无法找到域名 {clean_domain} 的 Cloudflare Zone: {e}"
+                    ))
+                    .await;
                 }
                 return Err(e);
             }
@@ -195,7 +198,8 @@ pub async fn request_certificate(
             Ok(id) => id,
             Err(e) => {
                 if let Some(t) = tracker {
-                    t.failure(&format!("在 Cloudflare 创建 TXT 记录失败: {e}")).await;
+                    t.failure(&format!("在 Cloudflare 创建 TXT 记录失败: {e}"))
+                        .await;
                 }
                 return Err(e);
             }

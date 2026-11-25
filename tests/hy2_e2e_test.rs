@@ -198,7 +198,10 @@ async fn multi_protocol_inbound_and_client_binding() {
     let cfg = rendered_config(&h);
     let inbounds = cfg["inbounds"].as_array().unwrap();
     let vless_ib = inbounds.iter().find(|i| i["protocol"] == "vless").unwrap();
-    let hy2_ib = inbounds.iter().find(|i| i["protocol"] == "hysteria").unwrap();
+    let hy2_ib = inbounds
+        .iter()
+        .find(|i| i["protocol"] == "hysteria")
+        .unwrap();
 
     assert_eq!(vless_ib["port"], 443);
     assert_eq!(hy2_ib["port"], 8443);

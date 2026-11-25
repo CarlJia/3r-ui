@@ -150,7 +150,10 @@ pub async fn list(
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if query.contains_key("new") {
-        return decorate(Redirect::to("/admin/inbound/new").into_response(), Some(&jar));
+        return decorate(
+            Redirect::to("/admin/inbound/new").into_response(),
+            Some(&jar),
+        );
     }
     if let Some(id) = query.get("id") {
         return decorate(
@@ -564,10 +567,12 @@ pub async fn toggle(
     };
 
     if ib.status == "active" {
-        let _ = sqlx::query("UPDATE inbounds SET status = 'disabled', updated_at = unixepoch() WHERE id = ?")
-            .bind(id)
-            .execute(&state.pool)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE inbounds SET status = 'disabled', updated_at = unixepoch() WHERE id = ?",
+        )
+        .bind(id)
+        .execute(&state.pool)
+        .await;
     } else {
         // Check if port is in use by another active inbound
         let port_in_use: i64 = sqlx::query_scalar(
@@ -580,14 +585,19 @@ pub async fn toggle(
         .unwrap_or(0);
 
         if port_in_use > 0 {
-            tracing::warn!(port = ib.listen_port, "cannot activate inbound: port in use");
+            tracing::warn!(
+                port = ib.listen_port,
+                "cannot activate inbound: port in use"
+            );
             return redirect_to_inbound(&jar);
         }
 
-        let _ = sqlx::query("UPDATE inbounds SET status = 'active', updated_at = unixepoch() WHERE id = ?")
-            .bind(id)
-            .execute(&state.pool)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE inbounds SET status = 'active', updated_at = unixepoch() WHERE id = ?",
+        )
+        .bind(id)
+        .execute(&state.pool)
+        .await;
     }
 
     reload(&state).await;
@@ -631,14 +641,13 @@ async fn reload(state: &AppState) {
     }
     let mieru_config_path = state.config.data_dir.join("mieru").join("config.json");
     let _ = crate::mieru::render_to_file(&state.pool, &mieru_config_path).await;
-    let _ = state.mieru_tx.send(crate::mieru::MieruCommand::Reload).await;
+    let _ = state
+        .mieru_tx
+        .send(crate::mieru::MieruCommand::Reload)
+        .await;
 }
 
-async fn render_error(
-    jar: &CookieJar,
-    inbound: Option<&Inbound>,
-    error: String,
-) -> Response {
+async fn render_error(jar: &CookieJar, inbound: Option<&Inbound>, error: String) -> Response {
     let default_short_id = inbound
         .map(|i| i.short_id.clone())
         .unwrap_or_else(random_short_id);

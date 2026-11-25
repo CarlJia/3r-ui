@@ -612,13 +612,8 @@ async fn settings_page_shows_cert_directory_and_files() {
     // Generate and save a cert in data_dir/certs/panel.example.com
     let (cert_pem, key_pem) =
         three_r_ui::proxy::cert::generate_self_signed_cert("panel.example.com").unwrap();
-    three_r_ui::proxy::cert::save_cert_files(
-        &h.data_dir,
-        "panel.example.com",
-        &cert_pem,
-        &key_pem,
-    )
-    .unwrap();
+    three_r_ui::proxy::cert::save_cert_files(&h.data_dir, "panel.example.com", &cert_pem, &key_pem)
+        .unwrap();
 
     // 1. Check HTML page renders cert directory
     let req = Request::builder()
@@ -646,8 +641,7 @@ async fn settings_page_shows_cert_directory_and_files() {
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json_bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let view: three_r_ui::proxy::cert::CertsDirView =
-        serde_json::from_slice(&json_bytes).unwrap();
+    let view: three_r_ui::proxy::cert::CertsDirView = serde_json::from_slice(&json_bytes).unwrap();
     assert!(view.exists);
     assert_eq!(view.total_domains, 1);
     assert_eq!(view.groups[0].domain, "panel.example.com");

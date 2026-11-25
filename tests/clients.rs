@@ -273,11 +273,7 @@ async fn admin_pages_show_left_navigation() {
             html.contains("class=\"sidebar\""),
             "missing sidebar at {uri}"
         );
-        for path in [
-            "/admin",
-            "/admin/inbound",
-            "/admin/clients",
-        ] {
+        for path in ["/admin", "/admin/inbound", "/admin/clients"] {
             assert!(
                 html.contains(&format!("href=\"{path}\"")),
                 "missing {path} at {uri}"

@@ -377,7 +377,8 @@ async fn hy2_share_uri_generation() {
     };
 
     let uri = three_r_ui::share::hy2::build_uri(&client, &inbound, "panel.example.com");
-    assert!(uri.starts_with("hysteria2://7c90d0c0-1234-4abc-9def-111122223333@panel.example.com:8443/?"));
+    assert!(uri
+        .starts_with("hysteria2://7c90d0c0-1234-4abc-9def-111122223333@panel.example.com:8443/?"));
     assert!(uri.contains("sni=hy2.example.com"));
     assert!(uri.contains("insecure=0"));
     assert!(uri.ends_with("#bob-node"));

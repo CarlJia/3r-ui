@@ -193,13 +193,18 @@ pub async fn new_form(
     Extension(_admin): Extension<CurrentAdmin>,
     jar: CookieJar,
 ) -> Response {
-    let inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
+    let inbounds = list_all_active_inbounds(&state.pool)
+        .await
+        .unwrap_or_default();
     let has_inbound = !inbounds.is_empty();
     let bound_inbound_ids: Vec<i64> = inbounds.iter().map(|i| i.id).collect();
     let html = ClientsFormTemplate {
         csrf: csrf_from_cookies(&jar),
         client: None,
-        inbounds: inbounds.iter().map(crate::web::inbound::InboundView::from).collect(),
+        inbounds: inbounds
+            .iter()
+            .map(crate::web::inbound::InboundView::from)
+            .collect(),
         bound_inbound_ids,
         error: if has_inbound {
             None
@@ -219,9 +224,17 @@ pub async fn create(
     jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<ClientForm>,
 ) -> Response {
-    let all_inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
+    let all_inbounds = list_all_active_inbounds(&state.pool)
+        .await
+        .unwrap_or_default();
     if all_inbounds.is_empty() {
-        return render_form_error(&jar, None, &all_inbounds, vec![], "请先在入站页面创建入站".to_string());
+        return render_form_error(
+            &jar,
+            None,
+            &all_inbounds,
+            vec![],
+            "请先在入站页面创建入站".to_string(),
+        );
     }
 
     let parsed = match parse_client_form(&form) {
@@ -233,7 +246,13 @@ pub async fn create(
         Ok(u) => u,
         Err(e) => {
             tracing::error!(error = %e, "UUID generation failed");
-            return render_form_error(&jar, None, &all_inbounds, vec![], "UUID 生成失败".to_string());
+            return render_form_error(
+                &jar,
+                None,
+                &all_inbounds,
+                vec![],
+                "UUID 生成失败".to_string(),
+            );
         }
     };
 
@@ -258,7 +277,10 @@ pub async fn create(
         selected_inbound_ids
     };
 
-    let primary_inbound_id = final_inbound_ids.first().copied().unwrap_or(all_inbounds[0].id);
+    let primary_inbound_id = final_inbound_ids
+        .first()
+        .copied()
+        .unwrap_or(all_inbounds[0].id);
 
     let mieru_username = name
         .map(|n| n.trim().to_lowercase().replace(' ', "_"))
@@ -319,14 +341,15 @@ pub async fn edit_form(
         }
     };
 
-    let inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
-    let mut bound_inbound_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT inbound_id FROM client_inbounds WHERE client_id = ?",
-    )
-    .bind(id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    let inbounds = list_all_active_inbounds(&state.pool)
+        .await
+        .unwrap_or_default();
+    let mut bound_inbound_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT inbound_id FROM client_inbounds WHERE client_id = ?")
+            .bind(id)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
 
     if bound_inbound_ids.is_empty() && client.inbound_id > 0 {
         bound_inbound_ids.push(client.inbound_id);
@@ -335,7 +358,10 @@ pub async fn edit_form(
     let html = ClientsFormTemplate {
         csrf: csrf_from_cookies(&jar),
         client: Some(ClientView::from(&client)),
-        inbounds: inbounds.iter().map(crate::web::inbound::InboundView::from).collect(),
+        inbounds: inbounds
+            .iter()
+            .map(crate::web::inbound::InboundView::from)
+            .collect(),
         bound_inbound_ids,
         error: None,
     }
@@ -596,14 +622,15 @@ pub async fn update(
         }
     };
 
-    let all_inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
-    let current_bound_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT inbound_id FROM client_inbounds WHERE client_id = ?",
-    )
-    .bind(id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    let all_inbounds = list_all_active_inbounds(&state.pool)
+        .await
+        .unwrap_or_default();
+    let current_bound_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT inbound_id FROM client_inbounds WHERE client_id = ?")
+            .bind(id)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
 
     let parsed = match parse_client_form(&form) {
         Ok(p) => p,
@@ -634,7 +661,10 @@ pub async fn update(
         Some(parsed.name.as_str())
     };
 
-    let sub_token = existing.sub_token.clone().unwrap_or_else(generate_sub_token);
+    let sub_token = existing
+        .sub_token
+        .clone()
+        .unwrap_or_else(generate_sub_token);
 
     let result = sqlx::query(
         "UPDATE clients SET name = ?, quota_bytes = ?, expiry_at = ?, status = ?, sub_token = ? \
@@ -652,7 +682,13 @@ pub async fn update(
     if let Err(e) = result {
         tracing::error!(error = %e, "client update failed");
         let view = ClientView::from(&existing);
-        return render_form_error(&jar, Some(view), &all_inbounds, current_bound_ids, "保存失败".to_string());
+        return render_form_error(
+            &jar,
+            Some(view),
+            &all_inbounds,
+            current_bound_ids,
+            "保存失败".to_string(),
+        );
     }
 
     if let Some(inbound_ids_str) = &form.inbound_ids {
@@ -730,7 +766,10 @@ pub async fn toggle(
     reload(&state).await;
 
     if query.redirect.as_deref() == Some("detail") {
-        decorate(Redirect::to(&format!("/admin/clients/{id}")).into_response(), Some(&jar))
+        decorate(
+            Redirect::to(&format!("/admin/clients/{id}")).into_response(),
+            Some(&jar),
+        )
     } else {
         redirect_to_list(&jar)
     }
@@ -841,10 +880,15 @@ async fn reload(state: &AppState) {
     }
     let mieru_config_path = state.config.data_dir.join("mieru").join("config.json");
     let _ = crate::mieru::render_to_file(&state.pool, &mieru_config_path).await;
-    let _ = state.mieru_tx.send(crate::mieru::MieruCommand::Reload).await;
+    let _ = state
+        .mieru_tx
+        .send(crate::mieru::MieruCommand::Reload)
+        .await;
 }
 
-async fn list_all_active_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<Inbound>> {
+async fn list_all_active_inbounds(
+    pool: &sqlx::SqlitePool,
+) -> crate::error::AppResult<Vec<Inbound>> {
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
@@ -866,7 +910,10 @@ fn render_form_error(
     let html = ClientsFormTemplate {
         csrf: csrf_from_cookies(jar),
         client,
-        inbounds: inbounds.iter().map(crate::web::inbound::InboundView::from).collect(),
+        inbounds: inbounds
+            .iter()
+            .map(crate::web::inbound::InboundView::from)
+            .collect(),
         bound_inbound_ids,
         error: Some(error),
     }

@@ -242,14 +242,7 @@ async fn uuid_filter_is_exact_match() {
 async fn status_filter_matches_only_that_status() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    seed_logs(
-        &h,
-        4,
-        recent_ts(),
-        &["uuid-aaa"],
-        &["accepted", "rejected"],
-    )
-    .await;
+    seed_logs(&h, 4, recent_ts(), &["uuid-aaa"], &["accepted", "rejected"]).await;
 
     // CSS 类定义始终出现在 <style> 块里，所以要匹配 row 上的
     // `class="status status-accepted"` 形态而非裸字符串。
@@ -275,14 +268,7 @@ async fn status_filter_matches_only_that_status() {
 async fn invalid_status_value_is_treated_as_no_filter() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    seed_logs(
-        &h,
-        4,
-        recent_ts(),
-        &["uuid-aaa"],
-        &["accepted", "rejected"],
-    )
-    .await;
+    seed_logs(&h, 4, recent_ts(), &["uuid-aaa"], &["accepted", "rejected"]).await;
 
     let resp = get(&h, "/admin/logs?status=garbage", &session).await;
     assert_eq!(resp.status(), StatusCode::OK, "no 400 for invalid status");
@@ -431,14 +417,7 @@ async fn logs_page_includes_sidebar_style_for_layout() {
 async fn status_badges_use_accepted_and_rejected_classes() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    seed_logs(
-        &h,
-        4,
-        recent_ts(),
-        &["uuid-aaa"],
-        &["accepted", "rejected"],
-    )
-    .await;
+    seed_logs(&h, 4, recent_ts(), &["uuid-aaa"], &["accepted", "rejected"]).await;
 
     let html = body_text(get(&h, "/admin/logs", &session).await).await;
     assert!(
@@ -516,21 +495,59 @@ async fn logs_default_to_7_days_and_quick_ranges() {
     // 1. 今天
     insert_log(&h, now - 60, "usr-tody", None, None, "accepted", None, None).await;
     // 2. 5 天前（一周内）
-    insert_log(&h, now - 5 * day, "usr-week", None, None, "accepted", None, None).await;
+    insert_log(
+        &h,
+        now - 5 * day,
+        "usr-week",
+        None,
+        None,
+        "accepted",
+        None,
+        None,
+    )
+    .await;
     // 3. 20 天前（一月内）
-    insert_log(&h, now - 20 * day, "usr-mnth", None, None, "accepted", None, None).await;
+    insert_log(
+        &h,
+        now - 20 * day,
+        "usr-mnth",
+        None,
+        None,
+        "accepted",
+        None,
+        None,
+    )
+    .await;
     // 4. 45 天前（超出一个月）
-    insert_log(&h, now - 45 * day, "usr-old1", None, None, "accepted", None, None).await;
+    insert_log(
+        &h,
+        now - 45 * day,
+        "usr-old1",
+        None,
+        None,
+        "accepted",
+        None,
+        None,
+    )
+    .await;
 
     // 默认打开：应该包含今天和5天前的，不包含20天前和45天前的
     let default_html = body_text(get(&h, "/admin/logs", &session).await).await;
     assert!(default_html.contains("usr-tody"), "default shows today log");
     assert!(default_html.contains("usr-week"), "default shows 5d log");
-    assert!(!default_html.contains("usr-mnth"), "default excludes 20d log");
-    assert!(!default_html.contains("usr-old1"), "default excludes 45d log");
-    assert!(default_html.contains("data-range=\"week\" class=\"btn-quick active\"")
-        || default_html.contains("class=\"btn-quick active\" data-range=\"week\""),
-        "week button active by default");
+    assert!(
+        !default_html.contains("usr-mnth"),
+        "default excludes 20d log"
+    );
+    assert!(
+        !default_html.contains("usr-old1"),
+        "default excludes 45d log"
+    );
+    assert!(
+        default_html.contains("data-range=\"week\" class=\"btn-quick active\"")
+            || default_html.contains("class=\"btn-quick active\" data-range=\"week\""),
+        "week button active by default"
+    );
 
     // 快捷查询：今天
     let today_html = body_text(get(&h, "/admin/logs?range=today", &session).await).await;
@@ -607,9 +624,12 @@ async fn xray_logs_page_renders_and_raw_endpoint_returns_lines() {
     let (session, _csrf) = login(&h).await;
 
     let log_file = h._dir.path().join("xray.log");
-    tokio::fs::write(&log_file, "line 1\n[Info] reading config\n[Warning] test warning\n")
-        .await
-        .unwrap();
+    tokio::fs::write(
+        &log_file,
+        "line 1\n[Info] reading config\n[Warning] test warning\n",
+    )
+    .await
+    .unwrap();
 
     let resp = get(&h, "/admin/logs/xray", &session).await;
     assert_eq!(resp.status(), StatusCode::OK);

@@ -198,12 +198,9 @@ pub fn scan_certs_dir(data_dir: &Path) -> CertsDirView {
 
                                         (s, sf, mod_time, perm)
                                     }
-                                    Err(_) => (
-                                        0,
-                                        "0 B".to_string(),
-                                        "-".to_string(),
-                                        "-".to_string(),
-                                    ),
+                                    Err(_) => {
+                                        (0, "0 B".to_string(), "-".to_string(), "-".to_string())
+                                    }
                                 };
 
                             let file_type = if is_cert {
@@ -255,72 +252,64 @@ pub fn scan_certs_dir(data_dir: &Path) -> CertsDirView {
                 };
 
                 let is_fallback = domain == "_fallback";
-                let (
-                    badge,
-                    text,
-                    subject,
-                    issuer,
-                    san_list,
-                    not_before,
-                    not_after,
-                    days_remaining,
-                ) = match parsed {
-                    Some(p) => {
-                        let badge = if is_fallback {
-                            "fallback".to_string()
-                        } else if p.is_expired {
-                            "expired".to_string()
-                        } else if p.is_expiring_soon {
-                            "expiring".to_string()
-                        } else {
-                            "valid".to_string()
-                        };
+                let (badge, text, subject, issuer, san_list, not_before, not_after, days_remaining) =
+                    match parsed {
+                        Some(p) => {
+                            let badge = if is_fallback {
+                                "fallback".to_string()
+                            } else if p.is_expired {
+                                "expired".to_string()
+                            } else if p.is_expiring_soon {
+                                "expiring".to_string()
+                            } else {
+                                "valid".to_string()
+                            };
 
-                        let text = if is_fallback {
-                            "自签兜底证书 (内部保底用)".to_string()
-                        } else if p.is_expired {
-                            format!("已过期 ({})", p.not_after_formatted)
-                        } else {
-                            format!("有效 (剩余 {} 天)", p.days_remaining)
-                        };
+                            let text = if is_fallback {
+                                "自签兜底证书 (内部保底用)".to_string()
+                            } else if p.is_expired {
+                                format!("已过期 ({})", p.not_after_formatted)
+                            } else {
+                                format!("有效 (剩余 {} 天)", p.days_remaining)
+                            };
 
-                        (
-                            badge,
-                            text,
-                            p.subject,
-                            p.issuer,
-                            p.san_list,
-                            p.not_before_formatted,
-                            p.not_after_formatted,
-                            Some(p.days_remaining),
-                        )
-                    }
-                    None => {
-                        if has_cert && has_key {
                             (
-                                "valid".to_string(),
-                                "证书文件正常 (未解析)".to_string(),
-                                "-".to_string(),
-                                "-".to_string(),
-                                vec![],
-                                "-".to_string(),
-                                "-".to_string(),
-                                None,
-                            )
-                        } else {
-                            (
-                                "incomplete".to_string(),
-                                "文件不全 (证书或私钥缺失)".to_string(),
-                                "-".to_string(),
-                                "-".to_string(),
-                                vec![],
-                                "-".to_string(),
-                                "-".to_string(),
-                                None,
+                                badge,
+                                text,
+                                p.subject,
+                                p.issuer,
+                                p.san_list,
+                                p.not_before_formatted,
+                                p.not_after_formatted,
+                                Some(p.days_remaining),
                             )
                         }
-                    }
-                };
+                        None => {
+                            if has_cert && has_key {
+                                (
+                                    "valid".to_string(),
+                                    "证书文件正常 (未解析)".to_string(),
+                                    "-".to_string(),
+                                    "-".to_string(),
+                                    vec![],
+                                    "-".to_string(),
+                                    "-".to_string(),
+                                    None,
+                                )
+                            } else {
+                                (
+                                    "incomplete".to_string(),
+                                    "文件不全 (证书或私钥缺失)".to_string(),
+                                    "-".to_string(),
+                                    "-".to_string(),
+                                    vec![],
+                                    "-".to_string(),
+                                    "-".to_string(),
+                                    None,
+                                )
+                            }
+                        }
+                    };
 
                 groups.push(CertDomainGroup {
                     domain,

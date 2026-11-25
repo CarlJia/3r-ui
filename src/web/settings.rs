@@ -362,8 +362,9 @@ pub async fn request_cert_now(
                 Err(e) => {
                     let err_msg = format!("ACME 证书申请失败: {e}");
                     tracing::error!(%err_msg);
-                    let _ = crate::proxy::config::update_cert_status(&pool, None, None, Some(&err_msg))
-                        .await;
+                    let _ =
+                        crate::proxy::config::update_cert_status(&pool, None, None, Some(&err_msg))
+                            .await;
                 }
             }
         });
@@ -804,11 +805,7 @@ pub async fn cert_file_download(
 ) -> Response {
     let domain = query.domain.trim();
     // Safety check: no path traversal or empty domain
-    if domain.is_empty()
-        || domain.contains('/')
-        || domain.contains('\\')
-        || domain.contains("..")
-    {
+    if domain.is_empty() || domain.contains('/') || domain.contains('\\') || domain.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid domain").into_response();
     }
 
@@ -822,10 +819,7 @@ pub async fn cert_file_download(
             let filename = format!("fullchain-{domain}.pem");
             axum::response::Response::builder()
                 .status(StatusCode::OK)
-                .header(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/x-pem-file",
-                )
+                .header(axum::http::header::CONTENT_TYPE, "application/x-pem-file")
                 .header(
                     axum::http::header::CONTENT_DISPOSITION,
                     format!("attachment; filename=\"{filename}\""),

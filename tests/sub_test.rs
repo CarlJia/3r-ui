@@ -51,7 +51,13 @@ async fn boot() -> Harness {
 }
 
 async fn body_text(resp: axum::response::Response) -> String {
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     String::from_utf8_lossy(&bytes).to_string()
 }
 
@@ -125,7 +131,9 @@ async fn sub_endpoint_serves_base64_nodes_and_userinfo() {
     .unwrap();
 
     assert!(decoded.contains("vless://11111111-2222-3333-4444-555555555555@sub.example.com:443?"));
-    assert!(decoded.contains("hysteria2://11111111-2222-3333-4444-555555555555@sub.example.com:8443/?"));
+    assert!(
+        decoded.contains("hysteria2://11111111-2222-3333-4444-555555555555@sub.example.com:8443/?")
+    );
     assert!(decoded.contains("#testuser%20-%20VLESS"));
     assert!(decoded.contains("#testuser%20-%20Hy2"));
 }
