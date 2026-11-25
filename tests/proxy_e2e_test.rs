@@ -212,14 +212,14 @@ async fn pingora_proxy_custom_path_and_sub_path_e2e() {
 
     // 5a. Root / or /hello without path prefix -> Expect 404 (panel is hidden)
     let resp = client
-        .get(&format!("https://panel.test:{proxy_port}/"))
+        .get(format!("https://panel.test:{proxy_port}/"))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
 
     let resp = client
-        .get(&format!("https://panel.test:{proxy_port}/hello"))
+        .get(format!("https://panel.test:{proxy_port}/hello"))
         .send()
         .await
         .unwrap();
@@ -227,7 +227,7 @@ async fn pingora_proxy_custom_path_and_sub_path_e2e() {
 
     // 5b. Request with custom path /xxjjye/hello -> 200 OK, stripped prefix and X-Forwarded-Prefix injected
     let resp = client
-        .get(&format!("https://panel.test:{proxy_port}/xxjjye/hello"))
+        .get(format!("https://panel.test:{proxy_port}/xxjjye/hello"))
         .send()
         .await
         .unwrap();
@@ -237,7 +237,7 @@ async fn pingora_proxy_custom_path_and_sub_path_e2e() {
 
     // 5c. Request with custom subscription path /mysub/token123 -> maps to upstream /sub/token123
     let resp = client
-        .get(&format!("https://panel.test:{proxy_port}/mysub/token123"))
+        .get(format!("https://panel.test:{proxy_port}/mysub/token123"))
         .send()
         .await
         .unwrap();
@@ -247,7 +247,7 @@ async fn pingora_proxy_custom_path_and_sub_path_e2e() {
 
     // 5d. Mismatched domain -> 403 Forbidden
     let resp = client
-        .get(&format!("https://evil.com:{proxy_port}/xxjjye/hello"))
+        .get(format!("https://evil.com:{proxy_port}/xxjjye/hello"))
         .send()
         .await
         .unwrap();
