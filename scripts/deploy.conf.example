@@ -1,0 +1,84 @@
+# ========================================================
+# 3R-UI 远程 VPS 一键部署配置文件
+# ========================================================
+# 使用说明：
+# 1. 复制此文件为 deploy.conf: cp scripts/deploy.conf.example scripts/deploy.conf
+# 2. 根据您的远程 VPS 信息填写以下配置
+# 3. 运行部署脚本: ./scripts/deploy.sh (或 ./scripts/deploy.sh scripts/deploy.conf)
+# ========================================================
+
+# --------------------------------------------------------
+# 1. 远程 VPS 连接信息 (必须配置)
+# --------------------------------------------------------
+# VPS 公网 IP 或解析域名
+VPS_HOST="your-vps-ip"
+
+# SSH 登录端口 (默认 22)
+VPS_PORT="22"
+
+# SSH 登录用户名 (推荐 root，非 root 需要具备 sudo 免密或输入密码权限)
+VPS_USER="root"
+
+# SSH 私钥路径 (留空则使用默认 ~/.ssh/id_rsa 或密码认证)
+# SSH_KEY="~/.ssh/id_rsa"
+SSH_KEY=""
+
+# SSH 连接额外参数 (可选，如 -o StrictHostKeyChecking=no)
+SSH_EXTRA_ARGS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+
+
+# --------------------------------------------------------
+# 2. 部署方式与二进制源 (二选一)
+# --------------------------------------------------------
+# DEPLOY_MODE 选项:
+#   "release" : 从 GitHub Releases 自动检测架构并下载最新官方二进制
+#   "local"   : 将本地编译好的二进制 (./target/release/3r-ui 或 LOCAL_BINARY 指定路径) 上传到远程 VPS
+#   "build"   : 在本地自动执行 cargo build --release (需本机有对应 cross/musl 环境) 后上传
+DEPLOY_MODE="release"
+
+# 当 DEPLOY_MODE="local" 时生效的本地二进制路径 (留空默认使用 ./target/release/3r-ui)
+LOCAL_BINARY=""
+
+# GitHub 仓库名 (用于下载 release，默认 XTLS/3r-ui)
+GITHUB_REPO="XTLS/3r-ui"
+
+
+# --------------------------------------------------------
+# 3. 3R-UI 服务端运行参数 (将自动同步至远程 /etc/3r-ui/3r-ui.env)
+# --------------------------------------------------------
+# 面板内部监听地址 (默认 127.0.0.1:2053，配合自带 Pingora 反代或外部反代)
+# 若希望不通过反向代理直接外网访问面板，可改为 0.0.0.0:2053
+BIND_ADDR="127.0.0.1:2053"
+
+# 客户端订阅与分享链接使用的节点外网域名或 IP (例如: vpn.example.com)
+# 如果留空，面板将提示配置，或者使用 VPS_HOST
+PUBLIC_HOST=""
+
+# Xray-core 下载镜像源 (默认官方 API，国内 VPS 可改为加速代理源)
+XRAY_DOWNLOAD_BASE="https://api.github.com"
+
+# 流量统计采集轮询间隔 (秒，默认 30)
+STATS_INTERVAL_SECS="30"
+
+# 日志输出等级 (默认 info,three_r_ui=info)
+RUST_LOG="info,three_r_ui=info"
+
+
+# --------------------------------------------------------
+# 4. 远程系统与服务配置 (可选)
+# --------------------------------------------------------
+# 安装目录
+INSTALL_BIN_DIR="/usr/local/bin"
+CONF_DIR="/etc/3r-ui"
+DATA_DIR="/var/lib/3r-ui"
+LOG_DIR="/var/log/3r-ui"
+
+# 是否在部署完成后重启并启用 systemd 服务 (true / false)
+AUTO_START_SERVICE="true"
+
+# 是否在远程自动开启 BBR 拥塞控制算法 (true / false)
+ENABLE_BBR="true"
+
+# 是否配置 UFW / 防火墙开放端口 (留空不配置，多个端口空格分隔，如 "22 80 443 8443 2053")
+# FIREWALL_PORTS="22 80 443 8443"
+FIREWALL_PORTS=""

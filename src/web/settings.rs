@@ -133,6 +133,54 @@ pub async fn settings_page(
 
     let csrf = csrf_from_cookies(&jar);
 
+    let proxy_raw = crate::proxy::config::get_proxy_settings(&state.pool)
+        .await
+        .unwrap_or_else(|_| crate::db::models::ProxySettings {
+            id: 1,
+            enabled: 0,
+            listen_port: 8443,
+            domain: String::new(),
+            cert_mode: "cf_dns".to_string(),
+            cf_api_token: String::new(),
+            cf_zone_id: String::new(),
+            custom_cert_path: String::new(),
+            custom_key_path: String::new(),
+            cert_expires_at: None,
+            last_renewed_at: None,
+            last_error: None,
+            updated_at: 0,
+        });
+
+    let cert_status_text = match proxy_raw.cert_expires_at {
+        Some(exp) => {
+            let now = now_unix();
+            let remaining_days = (exp - now) / 86400;
+            let iso = format_unix_time(exp);
+            if remaining_days < 0 {
+                format!("已过期 ({iso})")
+            } else {
+                format!("有效至 {iso} (剩余 {remaining_days} 天)")
+            }
+        }
+        None => "未签发或未安装".to_string(),
+    };
+
+    let masked_token = proxy_raw.masked_cf_token();
+    let proxy = ProxySettingsView {
+        enabled: proxy_raw.is_enabled(),
+        listen_port: proxy_raw.listen_port,
+        domain: proxy_raw.domain,
+        cert_mode: proxy_raw.cert_mode,
+        masked_token,
+        cf_zone_id: proxy_raw.cf_zone_id,
+        custom_cert_path: proxy_raw.custom_cert_path,
+        custom_key_path: proxy_raw.custom_key_path,
+        cert_status_text,
+        last_error: proxy_raw.last_error,
+    };
+
+    let certs_view = crate::proxy::cert::scan_certs_dir(&data_dir);
+
     let html = SettingsTemplate {
         csrf,
         username: admin.username.clone(),
@@ -142,6 +190,8 @@ pub async fn settings_page(
         data_dir: data_dir.display().to_string(),
         xray_version: version_output,
         jobs,
+        proxy,
+        certs_view,
         form_action: "/admin/settings/xray/update".to_string(),
     }
     .render()
@@ -166,7 +216,178 @@ struct SettingsTemplate {
     data_dir: String,
     xray_version: String,
     jobs: Vec<JobRowView>,
+    proxy: ProxySettingsView,
+    certs_view: crate::proxy::cert::CertsDirView,
     form_action: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProxySettingsView {
+    pub enabled: bool,
+    pub listen_port: i64,
+    pub domain: String,
+    pub cert_mode: String,
+    pub masked_token: String,
+    pub cf_zone_id: String,
+    pub custom_cert_path: String,
+    pub custom_key_path: String,
+    pub cert_status_text: String,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProxySettingsForm {
+    #[serde(default)]
+    pub enabled: Option<String>,
+    pub listen_port: u16,
+    pub domain: String,
+    pub cert_mode: String,
+    pub cf_api_token: Option<String>,
+    pub cf_zone_id: Option<String>,
+    pub custom_cert_path: Option<String>,
+    pub custom_key_path: Option<String>,
+}
+
+pub async fn save_proxy_settings(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    axum::extract::Form(form): axum::extract::Form<ProxySettingsForm>,
+) -> Response {
+    let is_enabled = form.enabled.as_deref() == Some("on")
+        || form.enabled.as_deref() == Some("true")
+        || form.enabled.as_deref() == Some("1");
+    let custom_cert = form.custom_cert_path.as_deref().unwrap_or_default();
+    let custom_key = form.custom_key_path.as_deref().unwrap_or_default();
+
+    if let Err(e) = crate::proxy::config::update_proxy_settings(
+        &state.pool,
+        is_enabled,
+        form.listen_port,
+        &form.domain,
+        &form.cert_mode,
+        form.cf_api_token.as_deref(),
+        form.cf_zone_id.as_deref(),
+        custom_cert,
+        custom_key,
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to update proxy settings");
+    }
+
+    let _ = state
+        .proxy_tx
+        .send(crate::proxy::ProxyCommand::Reload)
+        .await;
+
+    Redirect::to("/admin/settings").into_response()
+}
+
+pub async fn request_cert_now(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let settings = match crate::proxy::config::get_proxy_settings(&state.pool).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load proxy settings for cert request");
+            if headers
+                .get(axum::http::header::ACCEPT)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.contains("application/json"))
+                .unwrap_or(false)
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({ "error": "failed to load proxy settings" })),
+                )
+                    .into_response();
+            }
+            return Redirect::to("/admin/settings").into_response();
+        }
+    };
+
+    if settings.domain.is_empty() || settings.cf_api_token.is_empty() {
+        let _ = crate::proxy::config::update_cert_status(
+            &state.pool,
+            None,
+            None,
+            Some("申请失败：必须先配置域名和 Cloudflare API Token"),
+        )
+        .await;
+        if headers
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.contains("application/json"))
+            .unwrap_or(false)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": "domain or cf_api_token missing" })),
+            )
+                .into_response();
+        }
+        return Redirect::to("/admin/settings").into_response();
+    }
+
+    let pool = state.pool.clone();
+    let data_dir = state.config.data_dir.clone();
+    let domain = settings.domain.clone();
+    let cf_token = settings.cf_api_token.clone();
+    let cf_zone_id = if settings.cf_zone_id.is_empty() {
+        None
+    } else {
+        Some(settings.cf_zone_id.clone())
+    };
+    let proxy_tx = state.proxy_tx.clone();
+    let cert_tracker = state.cert_tracker.clone();
+
+    if cert_tracker.start(&domain).await {
+        tokio::spawn(async move {
+            match crate::proxy::acme::request_certificate(
+                &pool,
+                &data_dir,
+                &domain,
+                &cf_token,
+                cf_zone_id.as_deref(),
+                false,
+                Some(&cert_tracker),
+            )
+            .await
+            {
+                Ok(_) => {
+                    let _ = proxy_tx.send(crate::proxy::ProxyCommand::Reload).await;
+                }
+                Err(e) => {
+                    let err_msg = format!("ACME 证书申请失败: {e}");
+                    tracing::error!(%err_msg);
+                    let _ = crate::proxy::config::update_cert_status(&pool, None, None, Some(&err_msg))
+                        .await;
+                }
+            }
+        });
+    }
+
+    if headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/json"))
+        .unwrap_or(false)
+    {
+        return axum::Json(serde_json::json!({ "status": "ok" })).into_response();
+    }
+
+    Redirect::to("/admin/settings").into_response()
+}
+
+/// `GET /admin/settings/proxy/cert-status` — JSON polling endpoint for ACME logs & progress.
+pub async fn cert_request_status(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+) -> Response {
+    let status = state.cert_tracker.get_status().await;
+    axum::Json(status).into_response()
 }
 
 /// A job row prepared for template rendering, with Chinese stage label.
@@ -558,4 +779,70 @@ pub async fn update_status(
         JobRowView::from_job(&synth)
     });
     axum::Json(view).into_response()
+}
+
+/// `GET /admin/settings/certs` — return JSON view of certs directory
+pub async fn certs_dir_json(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+) -> Response {
+    let view = crate::proxy::cert::scan_certs_dir(&state.config.data_dir);
+    (StatusCode::OK, axum::Json(view)).into_response()
+}
+
+/// Query parameters for downloading a public certificate
+#[derive(Debug, Deserialize)]
+pub struct CertDownloadQuery {
+    pub domain: String,
+}
+
+/// `GET /admin/settings/certs/download` — download public certificate fullchain.pem
+pub async fn cert_file_download(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    Query(query): Query<CertDownloadQuery>,
+) -> Response {
+    let domain = query.domain.trim();
+    // Safety check: no path traversal or empty domain
+    if domain.is_empty()
+        || domain.contains('/')
+        || domain.contains('\\')
+        || domain.contains("..")
+    {
+        return (StatusCode::BAD_REQUEST, "invalid domain").into_response();
+    }
+
+    let cp = crate::proxy::cert::cert_path(&state.config.data_dir, domain);
+    if !cp.is_file() {
+        return (StatusCode::NOT_FOUND, "certificate file not found").into_response();
+    }
+
+    match std::fs::read(&cp) {
+        Ok(bytes) => {
+            let filename = format!("fullchain-{domain}.pem");
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/x-pem-file",
+                )
+                .header(
+                    axum::http::header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{filename}\""),
+                )
+                .body(axum::body::Body::from(bytes))
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to build response",
+                    )
+                        .into_response()
+                })
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read certificate: {e}"),
+        )
+            .into_response(),
+    }
 }

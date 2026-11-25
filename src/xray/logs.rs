@@ -23,8 +23,28 @@ use crate::crypto::session::now_unix;
 use crate::error::AppResult;
 use crate::xray::config::API_TAG;
 
-/// 30 天保留窗口（秒）。清理由 [`prune_loop`] 周期执行。
-const RETENTION_SECS: i64 = 30 * 24 * 3600;
+/// 默认保留窗口（秒）：7 天。`connection_logs.dest` 列记录了每个用户的
+/// 真实目标域名/IP（即便 VLESS 命令指定的目标也是域名/IP），保留时间越
+/// 长，数据库一旦泄露（面板入侵、备份外泄）还原出的用户访问历史越完整。
+/// 7 天足够覆盖一周内的故障排查；超过 7 天的日志运维价值低于泄露面增长。
+///
+/// 保留窗口可通过 `CONNECTION_LOG_RETENTION_DAYS` 环境变量调整，最大
+/// 30 天（防止误配成 0 / 负数导致 prune 删全表或反向保留历史）。运行期不
+/// 改动：调整后下一次 hourly prune tick 才生效。
+pub const DEFAULT_RETENTION_DAYS: i64 = 7;
+pub const MAX_RETENTION_DAYS: i64 = 30;
+
+/// Resolve the configured retention in seconds. The env var is read once per
+/// prune tick (every hour) so an operator can change it without restarting
+/// the panel; `i64` seconds is wide enough that any reasonable value fits.
+pub fn retention_secs() -> i64 {
+    let days = std::env::var("CONNECTION_LOG_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_RETENTION_DAYS)
+        .clamp(1, MAX_RETENTION_DAYS);
+    days * 24 * 3600
+}
 
 /// 一条解析后的访问日志。`uuid` / `src_addr` / `dest` / `reason` 缺失时为
 /// `None`；`status` 一定非空（否则就不是访问日志行）。
@@ -298,7 +318,7 @@ pub async fn prune_loop(pool: SqlitePool) {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        let threshold = now_unix() - RETENTION_SECS;
+        let threshold = now_unix() - retention_secs();
         match prune_older_than(&pool, threshold).await {
             Ok(0) => {}
             Ok(n) => tracing::info!(deleted = n, "pruned expired connection logs"),
@@ -403,5 +423,20 @@ mod tests {
         let ts =
             parse_xray_timestamp("2026/01/15 10:23:45.123456 rest").expect("with microseconds");
         assert_eq!(ts, 1768472625);
+    }
+
+    /// 默认窗口必须在 7 天附近：缩小保留期是 M3 修复的核心，把这个值定死
+    /// 在测试里防止有人把默认改回 30 天而不自知。
+    #[test]
+    fn default_retention_is_seven_days() {
+        assert_eq!(DEFAULT_RETENTION_DAYS, 7);
+        assert_eq!(DEFAULT_RETENTION_DAYS * 24 * 3600, 7 * 24 * 3600);
+    }
+
+    /// 上限防止误配出"永久保留"或"删除全表"。值定在 30 天与原来的默认
+    /// 对齐，避免给运维手册引入新的魔法数字。
+    #[test]
+    fn max_retention_is_thirty_days() {
+        assert_eq!(MAX_RETENTION_DAYS, 30);
     }
 }

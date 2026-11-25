@@ -292,7 +292,7 @@ pub async fn run_loop(
 #[allow(dead_code)]
 pub async fn _active_clients(pool: &SqlitePool) -> AppResult<Vec<Client>> {
     sqlx::query_as::<_, Client>(
-        "SELECT id, inbound_id, uuid, name, quota_bytes, expiry_at, status, created_at \
+        "SELECT id, inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, created_at \
          FROM clients WHERE status = 'active'",
     )
     .fetch_all(pool)

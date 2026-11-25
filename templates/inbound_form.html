@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>3R-UI 入站配置</title>
+  <title>{% if inbound.is_some() %}编辑入站 - 3R-UI{% else %}新建入站 - 3R-UI{% endif %}</title>
+  {% include "theme_head.html" %}
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
@@ -15,17 +16,17 @@
     @media (prefers-color-scheme: dark) {
       body { background: #16181d; color: #e6e8eb; }
       header, .card, .pubkey { background: #1e2126 !important; border-color: #2c3037 !important; }
-      input { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+      input, select { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
       .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
       .btn-primary { background: #3b82f6 !important; }
       .btn-danger { background: #4a2226 !important; color: #ff9b9b !important; }
+      .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
     }
     header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
     }
     header h1 { margin: 0; font-size: 17px; font-weight: 600; }
-    header a { color: #3b82f6; text-decoration: none; font-size: 13px; }
     main { max-width: 720px; margin: 0 auto; padding: 24px; }
     .card {
       background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
@@ -34,15 +35,15 @@
     .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
     .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
     label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
-    input {
+    input, select {
       width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px;
       border: 1px solid #d5d9de; background: #fff; color: inherit; margin-bottom: 14px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .actions { display: flex; gap: 10px; }
-    button {
+    .actions { display: flex; gap: 10px; align-items: center; }
+    button, .btn {
       padding: 9px 16px; font-size: 14px; font-weight: 600; border: 0;
-      border-radius: 8px; cursor: pointer;
+      border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block;
     }
     .btn-primary { background: #3b82f6; color: #fff; }
     .btn-primary:hover { background: #2f6fd8; }
@@ -55,11 +56,6 @@
     .error {
       background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
       border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
-    }
-    .pubkey {
-      background: #f4f5f7; border: 1px solid #e3e6ea; border-radius: 8px;
-      padding: 10px 12px; font-size: 12px; word-break: break-all;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 14px;
     }
     .config-echo {
       display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px;
@@ -77,7 +73,8 @@
   {% include "sidebar_nav.html" %}
   <div class="content">
   <header>
-    <h1>入站配置</h1>
+    <h1>{% if inbound.is_some() %}编辑入站{% else %}新建入站{% endif %}</h1>
+    <a href="/admin/inbound" class="btn btn-secondary">← 返回入站列表</a>
   </header>
   <main>
     {% if let Some(err) = error %}
@@ -87,58 +84,145 @@
     {% if let Some(ib) = inbound %}
     <section class="card">
       <h2>当前入站配置</h2>
-      <p class="hint">保存即重新生成 X25519 密钥对；旧客户端需要重新导入分享链接。</p>
+      <p class="hint">保存即重新应用配置；若为 VLESS 将重新生成密钥对。</p>
       <dl class="config-echo">
         <dt>监听端口</dt><dd>{{ ib.listen_port }}</dd>
+        <dt>入站协议</dt><dd>{% if ib.protocol == "hysteria2" %}Hysteria 2 (QUIC + TLS){% else if ib.protocol == "mieru" %}Mieru (抗探测 + 免证书){% else %}VLESS-REALITY-XHTTP{% endif %}</dd>
+        {% if ib.protocol == "hysteria2" %}
+        <dt>SNI</dt><dd>{{ ib.sni }}</dd>
+        <dt>证书模式</dt><dd>{{ ib.cert_mode }}</dd>
+        <dt>伪装网址</dt><dd>{{ ib.masquerade_url }}</dd>
+        {% if !ib.custom_cert_path.is_empty() %}
+        <dt>自定义证书</dt><dd>{{ ib.custom_cert_path }}</dd>
+        {% endif %}
+        {% else if ib.protocol == "mieru" %}
+        <dt>端口/端口段</dt><dd>{% if !ib.port_range.is_empty() %}{{ ib.port_range }}{% else %}{{ ib.listen_port }}{% endif %}</dd>
+        <dt>传输协议</dt><dd>{{ ib.transport_protocol }}</dd>
+        {% else %}
         <dt>REALITY dest</dt><dd>{{ ib.dest }}</dd>
         <dt>SNI</dt><dd>{{ ib.sni }}</dd>
         <dt>shortId</dt><dd><code>{{ ib.short_id }}</code></dd>
+        <dt>xhttp path</dt><dd><code>{{ ib.xhttp_path }}</code></dd>
         <dt>REALITY 公钥</dt><dd class="break-all"><code>{{ ib.public_key }}</code></dd>
+        {% endif %}
       </dl>
     </section>
     {% endif %}
 
     <section class="card">
-      <h2>{% if inbound.is_some() %}编辑入站{% else %}创建入站{% endif %}</h2>
-      <p class="hint">VLESS + REALITY + XHTTP — 面板仅支持单一入站。</p>
-      <form method="post" action="/admin/inbound">
+      <h2>{% if inbound.is_some() %}修改入站参数{% else %}配置新入站{% endif %}</h2>
+      <p class="hint">支持 VLESS (REALITY + XHTTP) 与 Hysteria 2 (QUIC + TLS) 协议入站。</p>
+      <form method="post" action="{% match inbound %}{% when Some with (i) %}/admin/inbound/{{ i.id }}{% when None %}/admin/inbound{% endmatch %}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
+        {% match inbound %}
+        {% when Some with (i) %}
+        <input type="hidden" name="id" value="{{ i.id }}">
+        {% when None %}
+        <input type="hidden" name="action" value="new">
+        {% endmatch %}
+
+        <label for="status">状态</label>
+        <select id="status" name="status">
+          <option value="active" {% match inbound %}{% when Some with (i) %}{% if i.is_active %}selected{% endif %}{% when None %}selected{% endmatch %}>启用 (active)</option>
+          <option value="disabled" {% match inbound %}{% when Some with (i) %}{% if !i.is_active %}selected{% endif %}{% when None %}{% endmatch %}>禁用 (disabled)</option>
+        </select>
+
+        <label for="protocol">入站协议</label>
+        <select id="protocol" name="protocol">
+          <option value="vless" {% match inbound %}{% when Some with (i) %}{% if i.protocol == "vless" %}selected{% endif %}{% when None %}selected{% endmatch %}>VLESS (REALITY + XHTTP)</option>
+          <option value="hysteria2" {% match inbound %}{% when Some with (i) %}{% if i.protocol == "hysteria2" %}selected{% endif %}{% when None %}{% endmatch %}>Hysteria 2 (QUIC + TLS)</option>
+          <option value="mieru" {% match inbound %}{% when Some with (i) %}{% if i.protocol == "mieru" %}selected{% endif %}{% when None %}{% endmatch %}>Mieru (高抗探测 + 免证书)</option>
+        </select>
+
         <label for="listen_port">监听端口</label>
         <input id="listen_port" name="listen_port" type="number" min="1" max="65535"
                value="{% match inbound %}{% when Some with (i) %}{{ i.listen_port }}{% when None %}443{% endmatch %}"
                required>
-        <label for="dest">REALITY dest（伪装目标域名）</label>
-        <input id="dest" name="dest" placeholder="www.apple.com"
-               value="{% match inbound %}{% when Some with (i) %}{{ i.dest }}{% when None %}{% endmatch %}"
-               required>
-        <label for="sni">SNI（serverName）</label>
-        <input id="sni" name="sni" placeholder="www.apple.com"
-               value="{% match inbound %}{% when Some with (i) %}{{ i.sni }}{% when None %}{% endmatch %}"
-               required>
-        <p class="hint">填其中一个会自动同步另一个；要分别配置时直接编辑其中一项即可。</p>
-        <p class="hint">目标站要支持 TLS 1.3 + HTTP/2，并且服务器能稳定访问（就近的大站最好）。
-          www.microsoft.com 已不能作为 REALITY 目标，不要再用。</p>
-        <label for="short_id">shortId（1-16 位十六进制）</label>
-        <div class="shortid-row">
-          <input id="short_id" name="short_id" placeholder="0123456789abcdef"
-                 value="{% match inbound %}{% when Some with (i) %}{{ i.short_id }}{% when None %}{{ default_short_id }}{% endmatch %}"
-                 required>
-          <button class="btn-secondary" type="button" id="shortid-random">随机</button>
+
+        <div id="sni-group">
+          <label for="sni">SNI（serverName / TLS 域名）</label>
+          <input id="sni" name="sni" placeholder="example.com"
+                 value="{% match inbound %}{% when Some with (i) %}{{ i.sni }}{% when None %}{% endmatch %}">
         </div>
-        <div class="actions">
+
+        <!-- Mieru 特有字段 -->
+        <div id="mieru-fields" style="display:none;">
+          <label for="port_range">端口段（可选连续端口范围，如 2012-2022；留空则仅使用监听端口）</label>
+          <input id="port_range" name="port_range" placeholder="2012-2022"
+                 value="{% match inbound %}{% when Some with (i) %}{{ i.port_range }}{% when None %}{% endmatch %}">
+
+          <label for="transport_protocol">传输协议</label>
+          <select id="transport_protocol" name="transport_protocol">
+            <option value="TCP" {% match inbound %}{% when Some with (i) %}{% if i.transport_protocol == "TCP" %}selected{% endif %}{% when None %}selected{% endmatch %}>TCP</option>
+            <option value="UDP" {% match inbound %}{% when Some with (i) %}{% if i.transport_protocol == "UDP" %}selected{% endif %}{% when None %}{% endmatch %}>UDP</option>
+            <option value="TCP,UDP" {% match inbound %}{% when Some with (i) %}{% if i.transport_protocol == "TCP,UDP" %}selected{% endif %}{% when None %}{% endmatch %}>TCP + UDP 双协议</option>
+          </select>
+          <p class="hint">Mieru 协议直接基于预共享时间窗口加盐认证，无需域名、TLS 证书及反代即可直接运行。</p>
+        </div>
+
+        <!-- VLESS 特有字段 -->
+        <div id="vless-fields">
+          <label for="dest">REALITY dest（伪装目标域名）</label>
+          <input id="dest" name="dest" placeholder="example.com"
+                 value="{% match inbound %}{% when Some with (i) %}{{ i.dest }}{% when None %}{% endmatch %}">
+          <p class="hint">填其中一个会自动同步另一个；要分别配置时直接编辑其中一项即可。</p>
+          <p class="hint">目标站要支持 TLS 1.3 + HTTP/2，并且服务器能稳定访问。dest 不能是 localhost / 内网 IP，
+            也不能带端口（端口固定为 443）。</p>
+
+          <label for="short_id">shortId（8-16 位十六进制）</label>
+          <div class="shortid-row">
+            <input id="short_id" name="short_id" placeholder="0123456789abcdef"
+                   value="{% match inbound %}{% when Some with (i) %}{{ i.short_id }}{% when None %}{{ default_short_id }}{% endmatch %}">
+            <button class="btn-secondary" type="button" id="shortid-random">随机</button>
+          </div>
+
+          <label for="xhttp_path">xhttp path（重新生成会让旧客户端连不上）</label>
+          <div class="shortid-row">
+            <input id="xhttp_path" name="xhttp_path"
+                   value="{% match inbound %}{% when Some with (i) %}{{ i.xhttp_path }}{% when None %}{{ default_xhttp_path }}{% endmatch %}">
+            <button class="btn-secondary" type="button" id="xhttp-path-random">随机</button>
+          </div>
+        </div>
+
+        <!-- Hysteria 2 特有字段 -->
+        <div id="hy2-fields" style="display:none;">
+          <label for="cert_mode">TLS 证书模式</label>
+          <select id="cert_mode" name="cert_mode">
+            <option value="auto" {% match inbound %}{% when Some with (i) %}{% if i.cert_mode != "custom" %}selected{% endif %}{% when None %}selected{% endmatch %}>自动复用系统/反代域名证书（带自签 Fallback）</option>
+            <option value="custom" {% match inbound %}{% when Some with (i) %}{% if i.cert_mode == "custom" %}selected{% endif %}{% when None %}{% endmatch %}>服务器本地自定义证书路径</option>
+          </select>
+
+          <div id="custom-cert-group" style="display:none;">
+            <label for="custom_cert_path">PEM 证书完整链路径 (fullchain.pem)</label>
+            <input id="custom_cert_path" name="custom_cert_path" placeholder="/etc/ssl/cert.pem"
+                   value="{% match inbound %}{% when Some with (i) %}{{ i.custom_cert_path }}{% when None %}{% endmatch %}">
+
+            <label for="custom_key_path">私钥路径 (privkey.pem)</label>
+            <input id="custom_key_path" name="custom_key_path" placeholder="/etc/ssl/key.pem"
+                   value="{% match inbound %}{% when Some with (i) %}{{ i.custom_key_path }}{% when None %}{% endmatch %}">
+          </div>
+
+          <label for="masquerade_url">HTTP 伪装网址（QUIC Masquerade）</label>
+          <input id="masquerade_url" name="masquerade_url" placeholder="https://news.ycombinator.com/"
+                 value="{% match inbound %}{% when Some with (i) %}{% if i.masquerade_url.is_empty() %}https://news.ycombinator.com/{% else %}{{ i.masquerade_url }}{% endif %}{% when None %}https://news.ycombinator.com/{% endmatch %}">
+          <p class="hint">当未经认证的探测或 HTTP 请求访问该 UDP 端口时，自动反向代理到该伪装网站。</p>
+        </div>
+
+        <div class="actions" style="margin-top:16px;">
           <button class="btn-primary" type="submit">保存并重载</button>
+          <a class="btn btn-secondary" href="/admin/inbound">返回列表</a>
         </div>
       </form>
     </section>
 
-    {% if inbound.is_some() %}
+    {% if let Some(ib) = inbound %}
     <section class="card">
       <h2>删除入站</h2>
       <p class="hint">删除后 xray 会立即停止监听该端口。</p>
-      <form method="post" action="/admin/inbound/delete">
+      <form method="post" action="/admin/inbound/{{ ib.id }}/delete" onsubmit="return confirm('确认删除该入站吗？删除后该端口将停止服务。');">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <div class="actions">
-          <button class="btn-danger" type="submit">删除</button>
+          <button class="btn-danger" type="submit">删除入站</button>
         </div>
       </form>
     </section>
@@ -148,12 +232,65 @@
 
   <script>
     (function () {
+      const proto = document.getElementById('protocol');
+      const vlessFields = document.getElementById('vless-fields');
+      const hy2Fields = document.getElementById('hy2-fields');
+      const mieruFields = document.getElementById('mieru-fields');
+      const sniGroup = document.getElementById('sni-group');
+      const sniInput = document.getElementById('sni');
+      const destInput = document.getElementById('dest');
+      const shortIdInput = document.getElementById('short_id');
+      const certMode = document.getElementById('cert_mode');
+      const customCertGroup = document.getElementById('custom-cert-group');
+
+      function syncProto() {
+        if (!proto) return;
+        if (proto.value === 'hysteria2') {
+          vlessFields.style.display = 'none';
+          hy2Fields.style.display = 'block';
+          if (mieruFields) mieruFields.style.display = 'none';
+          if (sniGroup) sniGroup.style.display = 'block';
+          if (sniInput) sniInput.setAttribute('required', 'required');
+          if (destInput) destInput.removeAttribute('required');
+          if (shortIdInput) shortIdInput.removeAttribute('required');
+        } else if (proto.value === 'mieru') {
+          vlessFields.style.display = 'none';
+          hy2Fields.style.display = 'none';
+          if (mieruFields) mieruFields.style.display = 'block';
+          if (sniGroup) sniGroup.style.display = 'none';
+          if (sniInput) sniInput.removeAttribute('required');
+          if (destInput) destInput.removeAttribute('required');
+          if (shortIdInput) shortIdInput.removeAttribute('required');
+        } else {
+          vlessFields.style.display = 'block';
+          hy2Fields.style.display = 'none';
+          if (mieruFields) mieruFields.style.display = 'none';
+          if (sniGroup) sniGroup.style.display = 'block';
+          if (sniInput) sniInput.setAttribute('required', 'required');
+          if (destInput) destInput.setAttribute('required', 'required');
+          if (shortIdInput) shortIdInput.setAttribute('required', 'required');
+        }
+      }
+
+      function syncCertMode() {
+        if (!certMode || !customCertGroup) return;
+        customCertGroup.style.display = certMode.value === 'custom' ? 'block' : 'none';
+      }
+
+      if (proto) {
+        proto.addEventListener('change', syncProto);
+        syncProto();
+      }
+      if (certMode) {
+        certMode.addEventListener('change', syncCertMode);
+        syncCertMode();
+      }
+    })();
+
+    (function () {
       const btn = document.getElementById('shortid-random');
       const input = document.getElementById('short_id');
       if (!btn || !input) return;
-      // 8 random bytes -> 16 lowercase hex chars. crypto.getRandomValues is
-      // available in every browser the panel targets and keeps the value
-      // unpredictable without a server round-trip.
       function rollShortId() {
         const buf = new Uint8Array(8);
         crypto.getRandomValues(buf);
@@ -167,26 +304,32 @@
         input.value = rollShortId();
         input.focus();
         input.select();
+        if (window.showToast) window.showToast('已生成随机 shortId', 'info', 2000);
       });
     })();
 
     (function () {
-      // dest and sni are usually the same domain (REALITY proxies to a
-      // TLS endpoint that matches its SNI). The handler keeps the link
-      // alive while the operator is typing into one field — but only as
-      // long as the other field has not been independently edited.
-      //
-      // Implementation: track the last value this side pushed; mirror only
-      // follows while its current value still equals what we last pushed.
-      // Once the operator edits the mirror, the equality fails and the
-      // link breaks for that direction (the operator's edit is preserved).
-      // Both directions track their own state, so editing sni does not
-      // silently re-enable the dest->sni link.
-      //
-      // Initial values matter: when the server renders dest="a.com",
-      // sni="b.com" (intentional divergence), both wires' lastEmitted equal
-      // their respective own values. Any input event finds the mirror
-      // unequal and skips — the divergence is preserved.
+      const btn = document.getElementById('xhttp-path-random');
+      const input = document.getElementById('xhttp_path');
+      if (!btn || !input) return;
+      function rollPath() {
+        const buf = new Uint8Array(8);
+        crypto.getRandomValues(buf);
+        let s = '';
+        for (let i = 0; i < buf.length; i++) {
+          s += buf[i].toString(16).padStart(2, '0');
+        }
+        return '/r/' + s;
+      }
+      btn.addEventListener('click', () => {
+        input.value = rollPath();
+        input.focus();
+        input.select();
+        if (window.showToast) window.showToast('已生成随机 XHTTP 路径', 'info', 2000);
+      });
+    })();
+
+    (function () {
       const dest = document.getElementById('dest');
       const sni = document.getElementById('sni');
       if (!dest || !sni) return;
@@ -197,7 +340,6 @@
             mirror.value = src.value;
             lastEmitted = src.value;
           } else {
-            // Operator edited mirror independently; break this direction.
             lastEmitted = null;
           }
         });

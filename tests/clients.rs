@@ -39,17 +39,25 @@ async fn boot() -> Harness {
     // The supervisor channel drains so Reload sends never block the handler.
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
+    let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
 
     let data_dir = config.data_dir.clone();
     let state = AppState {
         config: config.clone(),
         pool: pool.clone(),
         supervisor_tx: tx,
+        proxy_tx,
+        mieru_tx,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new(config.xray_download_base.clone())
                 .expect("installer must be constructible"),
         ),
+        cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
+        system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
@@ -64,9 +72,9 @@ async fn boot_with_inbound() -> Harness {
     let h = boot().await;
     sqlx::query(
         "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
-                public_key, short_id, status, created_at, updated_at) \
-         VALUES (8443, 'a.example', 'a.example', NULL, 'priv', 'pub', 'ab', 'active', \
-                unixepoch(), unixepoch())",
+                public_key, short_id, xhttp_path, status, created_at, updated_at) \
+         VALUES (8443, 'a.example', 'a.example', NULL, 'priv', 'pub', 'ab', \
+                '/r/test0123456789ab', 'active', unixepoch(), unixepoch())",
     )
     .execute(&h.pool)
     .await
@@ -269,7 +277,6 @@ async fn admin_pages_show_left_navigation() {
             "/admin",
             "/admin/inbound",
             "/admin/clients",
-            "/admin/clients/new",
         ] {
             assert!(
                 html.contains(&format!("href=\"{path}\"")),
@@ -313,10 +320,6 @@ async fn list_without_inbound_hides_the_add_button() {
     assert_eq!(resp.status(), StatusCode::OK);
     let html = body_text(resp).await;
     assert!(html.contains("尚未创建入站"));
-    assert!(
-        html.contains(r#"href="/admin/clients/new""#),
-        "the sidebar stays navigable"
-    );
     assert!(!html.contains(r#"class="btn btn-primary" href="/admin/clients/new""#));
 }
 
@@ -770,4 +773,74 @@ async fn config_json_remains_owner_only_after_client_changes() {
     let path = h.data_dir.join("xray").join("config.json");
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "REALITY private key lives in this file");
+}
+
+#[tokio::test]
+async fn client_toggle_enables_and_disables() {
+    let h = boot_with_inbound().await;
+    let (session, csrf) = login(&h).await;
+
+    post(
+        &h,
+        "/admin/clients",
+        &session,
+        &csrf,
+        "name=bob&quota_gb=10",
+    )
+    .await;
+
+    let (client_id, status): (i64, String) =
+        sqlx::query_as("SELECT id, status FROM clients WHERE name = 'bob'")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "active");
+
+    // Toggle to disable
+    let resp = post(
+        &h,
+        &format!("/admin/clients/{client_id}/toggle"),
+        &session,
+        &csrf,
+        "",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM clients WHERE id = ?")
+        .bind(client_id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "disabled");
+
+    let html = body_text(get(&h, "/admin/clients", &session).await).await;
+    assert!(html.contains("已禁用"));
+    assert!(html.contains("启用"));
+
+    // Toggle back to active with redirect=detail
+    let resp = post(
+        &h,
+        &format!("/admin/clients/{client_id}/toggle?redirect=detail"),
+        &session,
+        &csrf,
+        "",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get("location").unwrap().to_str().unwrap(),
+        format!("/admin/clients/{client_id}")
+    );
+
+    let status: String = sqlx::query_scalar("SELECT status FROM clients WHERE id = ?")
+        .bind(client_id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "active");
+
+    let html = body_text(get(&h, "/admin/clients", &session).await).await;
+    assert!(html.contains("启用"));
+    assert!(html.contains("禁用"));
 }

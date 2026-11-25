@@ -1,28 +1,121 @@
 body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
-.sidebar { position: sticky; top: 0; height: 100vh; padding: 28px 14px;
-           background: #182533; color: #eaf1f6; }
-.sidebar .brand { display: block; padding: 0 12px 28px; color: #fff;
-                  text-decoration: none; font-size: 19px; font-weight: 700; letter-spacing: .06em; }
+.sidebar { position: sticky; top: 0; height: 100vh; padding: 24px 14px 16px;
+           background: #182533; color: #eaf1f6; display: flex; flex-direction: column; }
+.sidebar .brand { display: block; padding: 0 12px 20px; color: #fff;
+                  text-decoration: none; font-size: 19px; font-weight: 700; letter-spacing: .06em; flex: 0 0 auto; }
 .sidebar .nav-label { margin: 0 12px 10px; font-size: 11px; letter-spacing: .14em;
-                      color: #93a8b9; }
-.sidebar nav { display: grid; gap: 4px; }
-.sidebar .nav-link { display: block; padding: 11px 12px; border-radius: 7px;
-                     color: #bdcbd6; text-decoration: none; font-size: 13px; }
+                      color: #93a8b9; text-transform: uppercase; flex: 0 0 auto; }
+.sidebar nav { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
+.sidebar .nav-link { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 38px; border-radius: 8px;
+                     color: #bdcbd6; text-decoration: none; font-size: 13px; font-weight: 500; flex: 0 0 auto;
+                     box-sizing: border-box; transition: background 0.15s ease, color 0.15s ease; }
+.sidebar .nav-icon { font-size: 15px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; width: 18px; flex: 0 0 18px; }
 .sidebar .nav-link:hover, .sidebar .nav-link:focus-visible { background: #273949; color: #fff; }
 .sidebar .nav-link.active { background: #24516a; color: #fff; font-weight: 600; }
-/* The "新增用户" entry is the always-available shortcut to the create form,
-   so an admin can land on it from any page — including the ones where the
-   list page itself hides its own "添加用户" button (no inbound yet). It sits
-   under "用户列表" as a peer rather than a child so it shares the same hit
-   target on the narrow-screen horizontal scrollbar. */
-.sidebar .nav-add { padding-left: 22px; font-size: 12px; opacity: .85; }
+.sidebar .sidebar-footer { margin-top: auto; padding: 12px 6px 0; border-top: 1px solid rgba(255,255,255,0.08); flex: 0 0 auto; }
+.sidebar .theme-toggle-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+  padding: 8px 12px; font-size: 12px; font-weight: 500;
+  border: 1px solid rgba(255,255,255,0.12); border-radius: 8px;
+  background: rgba(255,255,255,0.06); color: #cbd5e1;
+  cursor: pointer; transition: all 0.15s ease;
+}
+.sidebar .theme-toggle-btn:hover { background: rgba(255,255,255,0.14); color: #fff; border-color: rgba(255,255,255,0.22); }
+.sidebar .theme-toggle-icon { font-size: 14px; line-height: 1; }
 .content { min-width: 0; }
+
+/* Dark mode shared styles */
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) body { background: #16181d; color: #e6e8eb; }
+  html:not([data-theme="light"]) header,
+  html:not([data-theme="light"]) .card,
+  html:not([data-theme="light"]) .stat-card { background: #1e2126 !important; border-color: #2c3037 !important; }
+  html:not([data-theme="light"]) input,
+  html:not([data-theme="light"]) select { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+  html:not([data-theme="light"]) table,
+  html:not([data-theme="light"]) th,
+  html:not([data-theme="light"]) td { border-color: #2c3037 !important; }
+  html:not([data-theme="light"]) th { color: #94a3b8 !important; opacity: 1 !important; }
+  html:not([data-theme="light"]) label { color: #cbd5e1 !important; }
+  html:not([data-theme="light"]) dt { color: #94a3b8 !important; opacity: 1 !important; }
+  html:not([data-theme="light"]) dd { color: #f1f5f9 !important; }
+  html:not([data-theme="light"]) .hint { color: #94a3b8 !important; opacity: 1 !important; }
+  html:not([data-theme="light"]) code { background: rgba(255, 255, 255, 0.08) !important; color: #93c5fd !important; }
+  html:not([data-theme="light"]) .meta { background: #16181d !important; border-color: #2c3037 !important; color: #e2e8f0 !important; }
+  html:not([data-theme="light"]) .meta b { color: #60a5fa !important; font-weight: 600 !important; }
+  html:not([data-theme="light"]) .uri-box { background: #16181d !important; border-color: #2c3037 !important; color: #e2e8f0 !important; }
+  html:not([data-theme="light"]) .config-echo dt { color: #60a5fa !important; opacity: 1 !important; }
+  html:not([data-theme="light"]) .config-echo dd { color: #f1f5f9 !important; }
+  html:not([data-theme="light"]) .config-echo code { color: #93c5fd !important; }
+  html:not([data-theme="light"]) .pubkey { background: #16181d !important; border-color: #2c3037 !important; color: #93c5fd !important; }
+  html:not([data-theme="light"]) .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
+  html:not([data-theme="light"]) .btn-secondary:hover { background: #363b44 !important; color: #fff !important; }
+  html:not([data-theme="light"]) .badge-vless { background: #1e3a5f !important; color: #93c5fd !important; }
+  html:not([data-theme="light"]) .badge-hy2 { background: #4a1d34 !important; color: #f472b6 !important; }
+  html:not([data-theme="light"]) .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+  html:not([data-theme="light"]) .uuid { background: #16181d !important; color: #cbd5e1 !important; }
+}
+
+html[data-theme="dark"] body { background: #16181d !important; color: #e6e8eb !important; }
+html[data-theme="dark"] header,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .stat-card { background: #1e2126 !important; border-color: #2c3037 !important; }
+html[data-theme="dark"] input,
+html[data-theme="dark"] select { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+html[data-theme="dark"] table,
+html[data-theme="dark"] th,
+html[data-theme="dark"] td { border-color: #2c3037 !important; }
+html[data-theme="dark"] th { color: #94a3b8 !important; opacity: 1 !important; }
+html[data-theme="dark"] label { color: #cbd5e1 !important; }
+html[data-theme="dark"] dt { color: #94a3b8 !important; opacity: 1 !important; }
+html[data-theme="dark"] dd { color: #f1f5f9 !important; }
+html[data-theme="dark"] .hint { color: #94a3b8 !important; opacity: 1 !important; }
+html[data-theme="dark"] code { background: rgba(255, 255, 255, 0.08) !important; color: #93c5fd !important; }
+html[data-theme="dark"] .meta { background: #16181d !important; border-color: #2c3037 !important; color: #e2e8f0 !important; }
+html[data-theme="dark"] .meta b { color: #60a5fa !important; font-weight: 600 !important; }
+html[data-theme="dark"] .uri-box { background: #16181d !important; border-color: #2c3037 !important; color: #e2e8f0 !important; }
+html[data-theme="dark"] .config-echo dt { color: #60a5fa !important; opacity: 1 !important; }
+html[data-theme="dark"] .config-echo dd { color: #f1f5f9 !important; }
+html[data-theme="dark"] .config-echo code { color: #93c5fd !important; }
+html[data-theme="dark"] .pubkey { background: #16181d !important; border-color: #2c3037 !important; color: #93c5fd !important; }
+html[data-theme="dark"] .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
+html[data-theme="dark"] .btn-secondary:hover { background: #363b44 !important; color: #fff !important; }
+html[data-theme="dark"] .badge-vless { background: #1e3a5f !important; color: #93c5fd !important; }
+html[data-theme="dark"] .badge-hy2 { background: #4a1d34 !important; color: #f472b6 !important; }
+html[data-theme="dark"] .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+html[data-theme="dark"] .uuid { background: #16181d !important; color: #cbd5e1 !important; }
+
+/* Forced light mode override when OS is dark */
+html[data-theme="light"] body { background: #f6f7f9 !important; color: #1c2024 !important; }
+html[data-theme="light"] header,
+html[data-theme="light"] .card,
+html[data-theme="light"] .stat-card { background: #ffffff !important; border-color: #e3e6ea !important; }
+html[data-theme="light"] input,
+html[data-theme="light"] select { background: #ffffff !important; color: inherit !important; border-color: #d5d9de !important; }
+html[data-theme="light"] table,
+html[data-theme="light"] th,
+html[data-theme="light"] td { border-color: #eceef1 !important; }
+html[data-theme="light"] th { color: inherit !important; opacity: 0.7 !important; }
+html[data-theme="light"] label { color: inherit !important; }
+html[data-theme="light"] dt { color: inherit !important; opacity: 0.7 !important; }
+html[data-theme="light"] dd { color: inherit !important; }
+html[data-theme="light"] .hint { color: inherit !important; opacity: 0.65 !important; }
+html[data-theme="light"] code { background: #f4f5f7 !important; color: inherit !important; }
+html[data-theme="light"] .meta { background: #f4f5f7 !important; border-color: #e3e6ea !important; color: inherit !important; }
+html[data-theme="light"] .meta b { color: #1c2024 !important; }
+html[data-theme="light"] .uri-box { background: #f4f5f7 !important; border-color: #e3e6ea !important; color: inherit !important; }
+html[data-theme="light"] .btn-secondary { background: #e8eaed !important; color: #1c2024 !important; }
+html[data-theme="light"] .btn-secondary:hover { background: #d8dadf !important; color: inherit !important; }
+html[data-theme="light"] .uuid { background: #f4f5f7 !important; color: inherit !important; }
+
 @media (max-width: 760px) {
   body { display: block; }
-  .sidebar { position: static; height: auto; padding: 14px 16px; }
-  .sidebar .brand { padding: 0 0 10px; }
+  .sidebar { position: static; height: auto; padding: 14px 16px; flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .sidebar .brand { padding: 0 12px 0 0; }
   .sidebar .nav-label { display: none; }
-  .sidebar nav { display: flex; gap: 6px; overflow-x: auto; }
+  .sidebar nav { display: flex; gap: 6px; overflow-x: auto; flex: unset; }
   .sidebar .nav-link { white-space: nowrap; padding: 8px 10px; }
+  .sidebar .sidebar-footer { margin-top: 0; padding: 0; border-top: 0; }
+  .sidebar .theme-toggle-btn { padding: 6px 10px; font-size: 11px; }
   main { padding: 16px; }
 }

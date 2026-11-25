@@ -11,7 +11,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 
 use crate::crypto::password;
 use crate::crypto::session::{new_csrf_token, new_session_token, now_unix};
-use crate::db::models::Admin;
+use crate::db::models::{Admin, Inbound};
 use crate::web::middleware::{csrf_from_cookies, CurrentAdmin, SECURITY_HEADERS};
 use crate::web::{AppState, CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL_SECS};
 
@@ -27,6 +27,27 @@ struct LoginTemplate {
 struct DashboardTemplate {
     username: String,
     csrf: String,
+    xray_version: String,
+    xray_running: bool,
+    client_count: i64,
+    active_client_count: i64,
+    inbound: Option<DashboardInboundView>,
+    proxy: Option<DashboardProxyView>,
+    system: crate::web::system::SystemMetrics,
+}
+
+struct DashboardInboundView {
+    listen_port: i64,
+    dest: String,
+    sni: String,
+    xhttp_path: String,
+}
+
+struct DashboardProxyView {
+    enabled: bool,
+    listen_port: i64,
+    domain: String,
+    cert_status: String,
 }
 
 /// `GET /` — the login form. An authenticated visitor is bounced to /admin.
@@ -182,17 +203,139 @@ pub async fn change_password(
     redirect_with(jar, "/")
 }
 
-/// `GET /admin` — authenticated landing page. U5 replaces the body.
+/// `GET /admin` — authenticated landing page with system status summary.
 pub async fn dashboard(
     State(state): State<AppState>,
     axum::Extension(admin): axum::Extension<CurrentAdmin>,
     jar: CookieJar,
 ) -> Response {
-    let _ = &state;
     let csrf = csrf_from_cookies(&jar);
+
+    // 1. Get xray version and running status
+    let xray_bin =
+        state
+            .config
+            .data_dir
+            .join("xray")
+            .join(if cfg!(windows) { "xray.exe" } else { "xray" });
+
+    let xray_bin_clone = xray_bin.clone();
+    let xray_version = tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new(&xray_bin_clone)
+            .arg("--version")
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                let first_line = String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if first_line.is_empty() {
+                    "未安装".to_string()
+                } else {
+                    first_line
+                }
+            }
+            _ => "未安装".to_string(),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| "未安装".to_string());
+
+    // Check if xray process is actually running via PID file
+    let pid_file = state.config.data_dir.join("xray.pid");
+    let xray_running = if let Ok(content) = std::fs::read_to_string(&pid_file) {
+        if let Ok(pid) = content.trim().parse::<i32>() {
+            #[cfg(unix)]
+            {
+                unsafe { libc::kill(pid, 0) == 0 }
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // 2. Client counts
+    let client_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clients")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
+    let active_client_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM clients WHERE status = 'active'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
+
+    // 3. Inbound info
+    let inbound_row = sqlx::query_as::<_, Inbound>(
+        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, status, created_at, updated_at FROM inbounds LIMIT 1",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None);
+
+    let inbound = inbound_row.map(|i| {
+        let xhttp_path = crate::xray::config::effective_xhttp_path(&i);
+        DashboardInboundView {
+            listen_port: i.listen_port,
+            dest: i.dest,
+            sni: i.sni,
+            xhttp_path,
+        }
+    });
+
+    // 4. Proxy info
+    let proxy_settings = crate::proxy::config::get_proxy_settings(&state.pool)
+        .await
+        .ok();
+    let proxy = proxy_settings.map(|p| {
+        let cert_status = match p.cert_expires_at {
+            Some(exp) => {
+                let now = now_unix();
+                let remaining_days = (exp - now) / 86400;
+                let iso = crate::web::logs::timestamp_to_iso(exp);
+                if remaining_days < 0 {
+                    format!("已过期 ({iso})")
+                } else {
+                    format!("有效至 {iso} (剩余 {remaining_days} 天)")
+                }
+            }
+            None => {
+                if p.cert_mode == "custom" {
+                    "自定义本地证书".to_string()
+                } else {
+                    "未签发".to_string()
+                }
+            }
+        };
+        DashboardProxyView {
+            enabled: p.is_enabled(),
+            listen_port: p.listen_port,
+            domain: p.domain,
+            cert_status,
+        }
+    });
+
+    let system = state.system_tracker.collect(&state.config.data_dir);
+
     let html = DashboardTemplate {
         username: admin.0.username,
         csrf,
+        xray_version,
+        xray_running,
+        client_count,
+        active_client_count,
+        inbound,
+        proxy,
+        system,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));

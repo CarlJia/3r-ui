@@ -2,6 +2,8 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod mieru;
+pub mod proxy;
 pub mod quota;
 pub mod share;
 pub mod web;
@@ -22,24 +24,34 @@ pub use error::{AppError, AppResult};
 pub struct Services {
     pub pool: SqlitePool,
     pub supervisor_tx: mpsc::Sender<xray::SupervisorCommand>,
+    pub proxy_tx: mpsc::Sender<proxy::ProxyCommand>,
+    pub mieru_tx: mpsc::Sender<mieru::MieruCommand>,
     shutdown_initiated: Arc<std::sync::atomic::AtomicBool>,
     supervisor_handle: tokio::task::JoinHandle<()>,
     http_handle: tokio::task::JoinHandle<()>,
     stats_handle: tokio::task::JoinHandle<()>,
     logs_handle: tokio::task::JoinHandle<()>,
     prune_handle: tokio::task::JoinHandle<()>,
+    proxy_handle: tokio::task::JoinHandle<()>,
+    renewal_handle: tokio::task::JoinHandle<()>,
+    #[allow(dead_code)]
+    mieru_handle: tokio::task::JoinHandle<()>,
 }
 
 impl Services {
-    /// Stop the HTTP server, the xray supervisor, the stats poll loop, the
-    /// access-log receiver, and the retention pruner, then wait.
+    /// Stop the HTTP server, the xray supervisor, the Pingora proxy, the stats
+    /// poll loop, the access-log receiver, and the retention pruner, then wait.
     pub async fn shutdown(self) {
         // Signal background update tasks to abort without consuming supervisor.
         self.shutdown_initiated
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
+        let _ = self.proxy_tx.send(proxy::ProxyCommand::Stop).await;
+        let _ = self.mieru_tx.send(mieru::MieruCommand::Stop).await;
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), self.proxy_handle).await;
+        self.renewal_handle.abort();
         self.stats_handle.abort();
         self.logs_handle.abort();
         self.prune_handle.abort();
@@ -61,6 +73,11 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     let installer = std::sync::Arc::new(xray::Installer::new(config.xray_download_base.clone())?);
     let xray_bin = ensure_xray_binary(&config, installer.clone()).await;
     let config_path = config.data_dir.join("xray").join("config.json");
+
+    // 确保启动前先基于数据库当前配置渲染一次 config.json，避免新数据目录启动时 xray 找不到配置文件
+    if let Err(e) = xray::config::render(&pool, &config_path).await {
+        tracing::warn!(error = %e, "initial xray config render failed");
+    }
 
     // xray_log_rx 由访问日志接收 worker 消费（见下方 spawn）；通道满时
     // supervisor 丢行而不是反压 xray，见 XraySupervisor::new 的字段契约。
@@ -86,12 +103,51 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
             config.bind_addr
         ))
     })?;
+
+    // Pingora reverse proxy supervisor
+    let (proxy_tx, proxy_rx) = mpsc::channel::<proxy::ProxyCommand>(16);
+    let proxy_supervisor = proxy::ProxySupervisor::new(
+        pool.clone(),
+        config.data_dir.clone(),
+        config.bind_addr.clone(),
+    );
+    let proxy_handle = tokio::spawn(async move {
+        if let Err(e) = proxy_supervisor.run(proxy_rx).await {
+            tracing::error!(error = %e, "proxy supervisor exited with error");
+        }
+    });
+
+    let cert_tracker = Arc::new(proxy::CertProgressTracker::new());
+    let proxy_tx_renewal = proxy_tx.clone();
+    let renewal_handle = tokio::spawn(proxy::cert::run_renewal_loop(
+        pool.clone(),
+        config.data_dir.clone(),
+        proxy_tx_renewal,
+        Some(cert_tracker.clone()),
+    ));
+
+    // Mieru daemon supervisor
+    let mieru_bin = mieru::ensure_mieru(&config.data_dir).await?;
+    let mieru_config_path = config.data_dir.join("mieru").join("config.json");
+    let _ = mieru::render_to_file(&pool, &mieru_config_path).await;
+    let (mieru_tx, mieru_rx) = mpsc::channel::<mieru::MieruCommand>(16);
+    let mieru_supervisor = Arc::new(mieru::MieruSupervisor::new(
+        mieru_bin,
+        mieru_config_path,
+        &config.data_dir,
+    ));
+    let mieru_handle = tokio::spawn(mieru_supervisor.run(mieru_rx));
+
     let app_state = web::AppState {
         config: config.clone(),
         pool: pool.clone(),
         supervisor_tx: supervisor_tx.clone(),
+        proxy_tx: proxy_tx.clone(),
+        mieru_tx: mieru_tx.clone(),
         update_jobs: Arc::new(Mutex::new(HashMap::new())),
         installer: installer.clone(),
+        cert_tracker,
+        system_tracker: Arc::new(web::system::SystemTracker::new()),
         shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     // Clone the Arc handle for Services::shutdown before app_state is moved into the async block.
@@ -141,18 +197,23 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     // 访问日志行并落库。通道关闭（面板 shutdown）时循环自然退出。
     let logs_handle = tokio::spawn(xray::logs::run_log_line_loop(pool.clone(), xray_log_rx));
 
-    // 保留清理：每小时删除 30 天前的 connection_logs 行。
+    // 保留清理：每小时按 logs::retention_secs()（默认 7 天）删除老连接日志。
     let prune_handle = tokio::spawn(xray::logs::prune_loop(pool.clone()));
 
     Ok(Services {
         pool,
         supervisor_tx,
+        proxy_tx,
+        mieru_tx,
         shutdown_initiated,
         supervisor_handle,
         http_handle,
         stats_handle,
         logs_handle,
         prune_handle,
+        proxy_handle,
+        renewal_handle,
+        mieru_handle,
     })
 }
 
@@ -188,10 +249,15 @@ pub async fn init_storage(config: &AppConfig) -> AppResult<SqlitePool> {
     let db_path = config.data_dir.join("3r-ui.db");
     let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(8)
+        .max_connections(4)
+        .idle_timeout(Some(std::time::Duration::from_secs(60)))
         .connect(&db_url)
         .await
         .map_err(AppError::Database)?;
+    // 内存优化：限制 SQLite 单连接页面缓存上限为 2MB
+    let _ = sqlx::query("PRAGMA cache_size = -2000; PRAGMA temp_store = MEMORY;")
+        .execute(&pool)
+        .await;
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await

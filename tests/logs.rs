@@ -37,16 +37,24 @@ async fn boot() -> Harness {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
+    let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
 
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
+        proxy_tx,
+        mieru_tx,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
                 .expect("installer must be constructible"),
         ),
+        cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
+        system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
@@ -147,6 +155,10 @@ async fn seed_logs(h: &Harness, n: usize, base_ts: i64, uuids: &[&str], statuses
     }
 }
 
+fn recent_ts() -> i64 {
+    three_r_ui::crypto::session::now_unix() - 3600
+}
+
 // ---- auth 守卫 ----
 
 #[tokio::test]
@@ -178,7 +190,7 @@ async fn empty_logs_shows_an_empty_state() {
 async fn logs_list_renders_in_descending_logged_at_order() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    seed_logs(&h, 5, 1_700_000_000, &["uuid-aaa"], &["accepted"]).await;
+    seed_logs(&h, 5, recent_ts(), &["uuid-aaa"], &["accepted"]).await;
 
     let resp = get(&h, "/admin/logs", &session).await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -198,7 +210,7 @@ async fn uuid_filter_is_exact_match() {
     seed_logs(
         &h,
         4,
-        1_700_000_000,
+        recent_ts(),
         &["01234567-89ab-cdef-0123-456789abcdef"],
         &["accepted"],
     )
@@ -206,7 +218,7 @@ async fn uuid_filter_is_exact_match() {
     seed_logs(
         &h,
         2,
-        1_700_000_100,
+        recent_ts() + 100,
         &["99999999-aaaa-bbbb-cccc-dddddddddddd"],
         &["accepted"],
     )
@@ -233,7 +245,7 @@ async fn status_filter_matches_only_that_status() {
     seed_logs(
         &h,
         4,
-        1_700_000_000,
+        recent_ts(),
         &["uuid-aaa"],
         &["accepted", "rejected"],
     )
@@ -266,7 +278,7 @@ async fn invalid_status_value_is_treated_as_no_filter() {
     seed_logs(
         &h,
         4,
-        1_700_000_000,
+        recent_ts(),
         &["uuid-aaa"],
         &["accepted", "rejected"],
     )
@@ -303,7 +315,7 @@ async fn time_range_filter_bounds_logged_at() {
 async fn sql_injection_via_uuid_is_handled_as_literal() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    seed_logs(&h, 2, 1_700_000_000, &["uuid-aaa"], &["accepted"]).await;
+    seed_logs(&h, 2, recent_ts(), &["uuid-aaa"], &["accepted"]).await;
 
     // `abc' OR 1=1--` 必须按字面量处理，不报错也不返回全部行。
     let resp = get(&h, "/admin/logs?uuid=abc%27%20OR%201%3D1--", &session).await;
@@ -318,7 +330,7 @@ async fn sql_injection_via_uuid_is_handled_as_literal() {
 async fn pagination_splits_at_page_size() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    seed_logs(&h, 60, 1_700_000_000, &["uuid-aaa"], &["accepted"]).await;
+    seed_logs(&h, 60, recent_ts(), &["uuid-aaa"], &["accepted"]).await;
 
     let page1 = body_text(get(&h, "/admin/logs?page=1", &session).await).await;
     assert!(page1.contains("下一页"), "page 1 has a next link");
@@ -342,7 +354,7 @@ async fn pagination_links_preserve_filter_params() {
     seed_logs(
         &h,
         60,
-        1_700_000_000,
+        recent_ts(),
         &["01234567-89ab-cdef-0123-456789abcdef"],
         &["accepted"],
     )
@@ -367,7 +379,7 @@ async fn pagination_links_preserve_filter_params() {
 async fn invalid_page_value_falls_back_to_page_1() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    seed_logs(&h, 5, 1_700_000_000, &["uuid-aaa"], &["accepted"]).await;
+    seed_logs(&h, 5, recent_ts(), &["uuid-aaa"], &["accepted"]).await;
 
     let resp = get(&h, "/admin/logs?page=abc", &session).await;
     assert_eq!(resp.status(), StatusCode::OK, "no 400 for invalid page");
@@ -422,7 +434,7 @@ async fn status_badges_use_accepted_and_rejected_classes() {
     seed_logs(
         &h,
         4,
-        1_700_000_000,
+        recent_ts(),
         &["uuid-aaa"],
         &["accepted", "rejected"],
     )
@@ -450,7 +462,7 @@ async fn detail_column_escapes_html_in_raw_message() {
     let (session, _csrf) = login(&h).await;
     insert_log(
         &h,
-        1_700_000_000,
+        recent_ts(),
         "uuid-aaa",
         Some("10.0.0.1:1"),
         Some("a.com:443"),
@@ -475,7 +487,7 @@ async fn detail_column_truncates_long_raw_message() {
     let long = "x".repeat(200);
     insert_log(
         &h,
-        1_700_000_000,
+        recent_ts(),
         "uuid-aaa",
         Some("10.0.0.1:1"),
         Some("a.com:443"),
@@ -492,6 +504,58 @@ async fn detail_column_truncates_long_raw_message() {
         !html.contains(&format!(">{long}<")),
         "200-char raw_message should not be inline-rendered in full"
     );
+}
+
+#[tokio::test]
+async fn logs_default_to_7_days_and_quick_ranges() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let now = three_r_ui::crypto::session::now_unix();
+    let day = 86400;
+
+    // 1. 今天
+    insert_log(&h, now - 60, "usr-tody", None, None, "accepted", None, None).await;
+    // 2. 5 天前（一周内）
+    insert_log(&h, now - 5 * day, "usr-week", None, None, "accepted", None, None).await;
+    // 3. 20 天前（一月内）
+    insert_log(&h, now - 20 * day, "usr-mnth", None, None, "accepted", None, None).await;
+    // 4. 45 天前（超出一个月）
+    insert_log(&h, now - 45 * day, "usr-old1", None, None, "accepted", None, None).await;
+
+    // 默认打开：应该包含今天和5天前的，不包含20天前和45天前的
+    let default_html = body_text(get(&h, "/admin/logs", &session).await).await;
+    assert!(default_html.contains("usr-tody"), "default shows today log");
+    assert!(default_html.contains("usr-week"), "default shows 5d log");
+    assert!(!default_html.contains("usr-mnth"), "default excludes 20d log");
+    assert!(!default_html.contains("usr-old1"), "default excludes 45d log");
+    assert!(default_html.contains("data-range=\"week\" class=\"btn-quick active\"")
+        || default_html.contains("class=\"btn-quick active\" data-range=\"week\""),
+        "week button active by default");
+
+    // 快捷查询：今天
+    let today_html = body_text(get(&h, "/admin/logs?range=today", &session).await).await;
+    assert!(today_html.contains("usr-tody"));
+    assert!(!today_html.contains("usr-week"));
+
+    // 快捷查询：一周
+    let week_html = body_text(get(&h, "/admin/logs?range=week", &session).await).await;
+    assert!(week_html.contains("usr-tody"));
+    assert!(week_html.contains("usr-week"));
+    assert!(!week_html.contains("usr-mnth"));
+
+    // 快捷查询：一个月
+    let month_html = body_text(get(&h, "/admin/logs?range=month", &session).await).await;
+    assert!(month_html.contains("usr-tody"));
+    assert!(month_html.contains("usr-week"));
+    assert!(month_html.contains("usr-mnth"));
+    assert!(!month_html.contains("usr-old1"));
+
+    // 快捷查询：全部
+    let all_html = body_text(get(&h, "/admin/logs?range=all", &session).await).await;
+    assert!(all_html.contains("usr-tody"));
+    assert!(all_html.contains("usr-week"));
+    assert!(all_html.contains("usr-mnth"));
+    assert!(all_html.contains("usr-old1"));
 }
 
 // ---- prune_older_than 保留清理 ----
@@ -535,4 +599,26 @@ async fn prune_older_than_is_a_noop_when_nothing_matches() {
         .await
         .unwrap();
     assert_eq!(deleted, 0);
+}
+
+#[tokio::test]
+async fn xray_logs_page_renders_and_raw_endpoint_returns_lines() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+
+    let log_file = h._dir.path().join("xray.log");
+    tokio::fs::write(&log_file, "line 1\n[Info] reading config\n[Warning] test warning\n")
+        .await
+        .unwrap();
+
+    let resp = get(&h, "/admin/logs/xray", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(html.contains("Xray 运行日志"));
+    assert!(html.contains("reading config"));
+
+    let resp = get(&h, "/admin/logs/xray/raw", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_text(resp).await;
+    assert!(body.contains("test warning"));
 }

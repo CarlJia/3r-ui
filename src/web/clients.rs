@@ -37,7 +37,20 @@ struct ClientsListTemplate {
 struct ClientsFormTemplate {
     csrf: String,
     client: Option<ClientView>,
+    inbounds: Vec<crate::web::inbound::InboundView>,
+    bound_inbound_ids: Vec<i64>,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClientNodeCard {
+    pub inbound_id: i64,
+    pub protocol: String,
+    pub protocol_label: String,
+    pub listen_port: i64,
+    pub sni: String,
+    pub uri: String,
+    pub qr_path: String,
 }
 
 #[derive(Template)]
@@ -48,6 +61,9 @@ struct ClientsDetailTemplate {
     uri: String,
     qr_path: String,
     warning: Option<String>,
+    sub_url: String,
+    sub_qr_path: String,
+    nodes: Vec<ClientNodeCard>,
 }
 
 /// What the templates render. Decoupled from [`Client`] so we can layer in
@@ -101,6 +117,22 @@ pub struct ClientForm {
     pub quota_gb: String,
     #[serde(default)]
     pub expiry: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub inbound_ids: Option<String>,
+}
+
+pub fn generate_sub_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let mut s = String::with_capacity(32);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// `GET /admin/clients` — list every non-deleted client, newest first.
@@ -115,7 +147,7 @@ pub async fn list(
     let has_inbound = current_inbound(&state).await.is_ok_and(|i| i.is_some());
     let rows = match sqlx::query_as::<_, ClientTrafficRow>(
         "SELECT c.id, c.inbound_id, c.uuid, c.name, c.quota_bytes, c.expiry_at, \
-                c.status, c.created_at, COALESCE(t.uplink, 0) AS uplink, \
+                c.status, c.sub_token, c.mieru_username, c.mieru_password, c.created_at, COALESCE(t.uplink, 0) AS uplink, \
                 COALESCE(t.downlink, 0) AS downlink \
          FROM clients c LEFT JOIN traffic_snapshots t ON t.rowid = ( \
            SELECT s.rowid FROM traffic_snapshots s WHERE s.client_id = c.id \
@@ -161,10 +193,14 @@ pub async fn new_form(
     Extension(_admin): Extension<CurrentAdmin>,
     jar: CookieJar,
 ) -> Response {
-    let has_inbound = current_inbound(&state).await.is_ok_and(|i| i.is_some());
+    let inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
+    let has_inbound = !inbounds.is_empty();
+    let bound_inbound_ids: Vec<i64> = inbounds.iter().map(|i| i.id).collect();
     let html = ClientsFormTemplate {
         csrf: csrf_from_cookies(&jar),
         client: None,
+        inbounds: inbounds.iter().map(crate::web::inbound::InboundView::from).collect(),
+        bound_inbound_ids,
         error: if has_inbound {
             None
         } else {
@@ -183,49 +219,84 @@ pub async fn create(
     jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<ClientForm>,
 ) -> Response {
-    let inbound = match current_inbound(&state).await {
-        Ok(Some(i)) => i,
-        Ok(None) => return render_form_error(&jar, None, "请先在入站页面创建入站".to_string()),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to read inbound for client create");
-            return render_form_error(&jar, None, "数据库错误".to_string());
-        }
-    };
+    let all_inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
+    if all_inbounds.is_empty() {
+        return render_form_error(&jar, None, &all_inbounds, vec![], "请先在入站页面创建入站".to_string());
+    }
 
     let parsed = match parse_client_form(&form) {
         Ok(p) => p,
-        Err(msg) => return render_form_error(&jar, None, msg),
+        Err(msg) => return render_form_error(&jar, None, &all_inbounds, vec![], msg),
     };
 
     let new_uuid = match uuid::v4() {
         Ok(u) => u,
         Err(e) => {
             tracing::error!(error = %e, "UUID generation failed");
-            return render_form_error(&jar, None, "UUID 生成失败".to_string());
+            return render_form_error(&jar, None, &all_inbounds, vec![], "UUID 生成失败".to_string());
         }
     };
 
+    let sub_token = generate_sub_token();
     let name = if parsed.name.is_empty() {
         None
     } else {
         Some(parsed.name.as_str())
     };
 
-    let result = sqlx::query(
-        "INSERT INTO clients (inbound_id, uuid, name, quota_bytes, expiry_at, status, created_at) \
-         VALUES (?, ?, ?, ?, ?, 'active', unixepoch())",
+    let selected_inbound_ids: Vec<i64> = form
+        .inbound_ids
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .collect();
+
+    let final_inbound_ids = if selected_inbound_ids.is_empty() {
+        all_inbounds.iter().map(|i| i.id).collect::<Vec<_>>()
+    } else {
+        selected_inbound_ids
+    };
+
+    let primary_inbound_id = final_inbound_ids.first().copied().unwrap_or(all_inbounds[0].id);
+
+    let mieru_username = name
+        .map(|n| n.trim().to_lowercase().replace(' ', "_"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("user_{}", &new_uuid[..8.min(new_uuid.len())]));
+    let mieru_password = format!("{:016x}", rand::random::<u64>());
+
+    let res = sqlx::query(
+        "INSERT INTO clients (inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, mieru_username, mieru_password, created_at) \
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, unixepoch())",
     )
-    .bind(inbound.id)
+    .bind(primary_inbound_id)
     .bind(&new_uuid)
     .bind(name)
     .bind(parsed.quota_bytes)
     .bind(parsed.expiry_at)
+    .bind(&sub_token)
+    .bind(&mieru_username)
+    .bind(&mieru_password)
     .execute(&state.pool)
     .await;
 
-    if let Err(e) = result {
-        tracing::error!(error = %e, "client insert failed");
-        return render_form_error(&jar, None, "保存失败".to_string());
+    let client_id = match res {
+        Ok(r) => r.last_insert_rowid(),
+        Err(e) => {
+            tracing::error!(error = %e, "client insert failed");
+            return render_form_error(&jar, None, &all_inbounds, vec![], "保存失败".to_string());
+        }
+    };
+
+    for ib_id in final_inbound_ids {
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id) VALUES (?, ?)",
+        )
+        .bind(client_id)
+        .bind(ib_id)
+        .execute(&state.pool)
+        .await;
     }
 
     reload(&state).await;
@@ -239,23 +310,38 @@ pub async fn edit_form(
     jar: CookieJar,
     Path(id): Path<i64>,
 ) -> Response {
-    match load_client(&state.pool, id).await {
-        Ok(Some(c)) => {
-            let html = ClientsFormTemplate {
-                csrf: csrf_from_cookies(&jar),
-                client: Some(ClientView::from(&c)),
-                error: None,
-            }
-            .render()
-            .unwrap_or_else(|e| format!("template error: {e}"));
-            page(jar, StatusCode::OK, html)
-        }
-        Ok(None) => not_found_response(),
+    let client = match load_client(&state.pool, id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return not_found_response(),
         Err(e) => {
             tracing::error!(error = %e, "client lookup failed");
-            not_found_response()
+            return not_found_response();
         }
+    };
+
+    let inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
+    let mut bound_inbound_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT inbound_id FROM client_inbounds WHERE client_id = ?",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
+    if bound_inbound_ids.is_empty() && client.inbound_id > 0 {
+        bound_inbound_ids.push(client.inbound_id);
     }
+
+    let html = ClientsFormTemplate {
+        csrf: csrf_from_cookies(&jar),
+        client: Some(ClientView::from(&client)),
+        inbounds: inbounds.iter().map(crate::web::inbound::InboundView::from).collect(),
+        bound_inbound_ids,
+        error: None,
+    }
+    .render()
+    .unwrap_or_else(|e| format!("template error: {e}"));
+    page(jar, StatusCode::OK, html)
 }
 
 /// `GET /admin/clients/:id` — share / QR detail page.
@@ -265,7 +351,7 @@ pub async fn detail(
     jar: CookieJar,
     Path(id): Path<i64>,
 ) -> Response {
-    let client = match load_client(&state.pool, id).await {
+    let mut client = match load_client(&state.pool, id).await {
         Ok(Some(c)) => c,
         Ok(None) => return not_found_response(),
         Err(e) => {
@@ -273,16 +359,42 @@ pub async fn detail(
             return not_found_response();
         }
     };
-    let inbound = match load_active_inbound(&state.pool).await {
-        Ok(Some(i)) => i,
-        Ok(None) => {
-            return render_detail_error(&jar, "尚未创建入站，无法生成分享链接".to_string()).await
+
+    if client.sub_token.is_none() {
+        let tok = generate_sub_token();
+        let _ = sqlx::query("UPDATE clients SET sub_token = ? WHERE id = ?")
+            .bind(&tok)
+            .bind(id)
+            .execute(&state.pool)
+            .await;
+        client.sub_token = Some(tok);
+    }
+
+    let bound_inbounds: Vec<Inbound> = sqlx::query_as(
+        "SELECT i.id, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
+                i.short_id, i.xhttp_path, i.protocol, i.cert_mode, i.custom_cert_path, i.custom_key_path, \
+                i.masquerade_url, i.port_range, i.transport_protocol, i.status, i.created_at, i.updated_at \
+         FROM inbounds i \
+         JOIN client_inbounds ci ON ci.inbound_id = i.id \
+         WHERE ci.client_id = ? AND i.status = 'active' \
+         ORDER BY i.id ASC",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
+    let inbounds = if bound_inbounds.is_empty() {
+        if let Ok(Some(single)) = load_active_inbound(&state.pool).await {
+            vec![single]
+        } else {
+            return render_detail_error(&jar, "尚未创建入站，无法生成分享链接".to_string()).await;
         }
-        Err(e) => {
-            tracing::error!(error = %e, "inbound lookup failed for detail");
-            return not_found_response();
-        }
+    } else {
+        bound_inbounds
     };
+
+    let first_inbound = inbounds[0].clone();
 
     let public_host = state.config.public_host.clone();
     let warning = if public_host.is_empty() {
@@ -296,24 +408,72 @@ pub async fn detail(
         public_host
     };
 
-    let uri = crate::share::vless::build_uri(&client, &inbound, &host);
+    let sub_token = client.sub_token.clone().unwrap_or_default();
+    let sub_url = format!("http://{host}/sub/{sub_token}");
+    let sub_qr_path = format!("/admin/clients/{id}/qr.png?sub=1");
+
+    let nodes: Vec<ClientNodeCard> = inbounds
+        .iter()
+        .map(|ib| {
+            let is_hy2 = ib.protocol == "hysteria2";
+            let is_mieru = ib.protocol == "mieru";
+            let mut c_clone = client.clone();
+            let base_name = client.name.as_deref().unwrap_or("3r-ui");
+            let proto_label = if is_hy2 {
+                "Hy2"
+            } else if is_mieru {
+                "Mieru"
+            } else {
+                "VLESS"
+            };
+            c_clone.name = Some(format!("{base_name} - {proto_label}"));
+
+            let uri = if is_hy2 {
+                crate::share::hy2::build_uri(&c_clone, ib, &host)
+            } else if is_mieru {
+                crate::share::mieru::build_uri(&c_clone, ib, &host)
+            } else {
+                crate::share::vless::build_uri(&c_clone, ib, &host)
+            };
+            let qr_path = format!("/admin/clients/{id}/qr.png?inbound_id={}", ib.id);
+
+            ClientNodeCard {
+                inbound_id: ib.id,
+                protocol: ib.protocol.clone(),
+                protocol_label: proto_label.to_string(),
+                listen_port: ib.listen_port,
+                sni: ib.sni.clone(),
+                uri,
+                qr_path,
+            }
+        })
+        .collect();
+
+    let default_uri = nodes
+        .iter()
+        .find(|n| n.protocol != "hysteria2")
+        .or_else(|| nodes.first())
+        .map(|n| n.uri.clone())
+        .unwrap_or_default();
+
     let qr_path = format!("/admin/clients/{id}/qr.png?host={}", url_encode(&host));
 
     let html = ClientsDetailTemplate {
         client: ClientView::from(&client),
-        inbound,
-        uri,
+        inbound: first_inbound,
+        uri: default_uri,
         qr_path,
         warning,
+        sub_url,
+        sub_qr_path,
+        nodes,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
     page(jar, StatusCode::OK, html)
 }
 
-/// `GET /admin/clients/:id/qr.png` — stream a PNG of the VLESS URI. The
-/// optional `host` query param overrides `PUBLIC_HOST` for one-off renders
-/// (used by the detail page preview when no PUBLIC_HOST is set yet).
+/// `GET /admin/clients/:id/qr.png` — stream a PNG of the URI or subscription.
 pub async fn qr_png(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
@@ -327,10 +487,6 @@ pub async fn qr_png(
             tracing::error!(error = %e, "client lookup failed for qr");
             return not_found_response();
         }
-    };
-    let inbound = match load_active_inbound(&state.pool).await {
-        Ok(Some(i)) => i,
-        _ => return not_found_response(),
     };
 
     let host = params
@@ -347,7 +503,39 @@ pub async fn qr_png(
         })
         .unwrap_or_else(|| "your-server.example.com".to_string());
 
-    let uri = crate::share::vless::build_uri(&client, &inbound, &host);
+    let uri = if params.contains_key("sub") {
+        let tok = client.sub_token.clone().unwrap_or_default();
+        format!("http://{host}/sub/{tok}")
+    } else if let Some(ib_id) = params.get("inbound_id").and_then(|s| s.parse::<i64>().ok()) {
+        let inbound = match sqlx::query_as::<_, Inbound>(
+            "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+                    xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
+                    port_range, transport_protocol, status, created_at, updated_at \
+             FROM inbounds WHERE id = ?",
+        )
+        .bind(ib_id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(Some(i)) => i,
+            _ => return not_found_response(),
+        };
+
+        if inbound.protocol == "hysteria2" {
+            crate::share::hy2::build_uri(&client, &inbound, &host)
+        } else if inbound.protocol == "mieru" {
+            crate::share::mieru::build_uri(&client, &inbound, &host)
+        } else {
+            crate::share::vless::build_uri(&client, &inbound, &host)
+        }
+    } else {
+        let inbound = match load_active_inbound(&state.pool).await {
+            Ok(Some(i)) => i,
+            _ => return not_found_response(),
+        };
+        crate::share::vless::build_uri(&client, &inbound, &host)
+    };
+
     match crate::share::qr::render_png(&uri) {
         Ok(bytes) => {
             let mut response = (
@@ -382,7 +570,8 @@ async fn render_detail_error(jar: &CookieJar, message: String) -> Response {
 async fn load_active_inbound(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Option<Inbound>> {
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
-                status, created_at, updated_at \
+                xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
+                port_range, transport_protocol, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
     )
     .fetch_optional(pool)
@@ -407,12 +596,27 @@ pub async fn update(
         }
     };
 
+    let all_inbounds = list_all_active_inbounds(&state.pool).await.unwrap_or_default();
+    let current_bound_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT inbound_id FROM client_inbounds WHERE client_id = ?",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
     let parsed = match parse_client_form(&form) {
         Ok(p) => p,
         Err(msg) => {
             let view = ClientView::from(&existing);
-            return render_form_error(&jar, Some(view), msg);
+            return render_form_error(&jar, Some(view), &all_inbounds, current_bound_ids, msg);
         }
+    };
+
+    let explicit_status = match form.status.as_deref() {
+        Some("disabled") => "disabled",
+        Some("active") => "active",
+        _ => existing.status.as_str(),
     };
 
     let new_status = if parsed
@@ -421,7 +625,7 @@ pub async fn update(
     {
         "disabled"
     } else {
-        existing.status.as_str()
+        explicit_status
     };
 
     let name = if parsed.name.is_empty() {
@@ -430,14 +634,17 @@ pub async fn update(
         Some(parsed.name.as_str())
     };
 
+    let sub_token = existing.sub_token.clone().unwrap_or_else(generate_sub_token);
+
     let result = sqlx::query(
-        "UPDATE clients SET name = ?, quota_bytes = ?, expiry_at = ?, status = ? \
+        "UPDATE clients SET name = ?, quota_bytes = ?, expiry_at = ?, status = ?, sub_token = ? \
          WHERE id = ?",
     )
     .bind(name)
     .bind(parsed.quota_bytes)
     .bind(parsed.expiry_at)
     .bind(new_status)
+    .bind(&sub_token)
     .bind(id)
     .execute(&state.pool)
     .await;
@@ -445,7 +652,29 @@ pub async fn update(
     if let Err(e) = result {
         tracing::error!(error = %e, "client update failed");
         let view = ClientView::from(&existing);
-        return render_form_error(&jar, Some(view), "保存失败".to_string());
+        return render_form_error(&jar, Some(view), &all_inbounds, current_bound_ids, "保存失败".to_string());
+    }
+
+    if let Some(inbound_ids_str) = &form.inbound_ids {
+        let selected: Vec<i64> = inbound_ids_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<i64>().ok())
+            .collect();
+        if !selected.is_empty() {
+            let _ = sqlx::query("DELETE FROM client_inbounds WHERE client_id = ?")
+                .bind(id)
+                .execute(&state.pool)
+                .await;
+            for ib_id in &selected {
+                let _ = sqlx::query(
+                    "INSERT OR IGNORE INTO client_inbounds (client_id, inbound_id) VALUES (?, ?)",
+                )
+                .bind(id)
+                .bind(*ib_id)
+                .execute(&state.pool)
+                .await;
+            }
+        }
     }
 
     reload(&state).await;
@@ -465,6 +694,46 @@ pub async fn delete(
         .await;
     reload(&state).await;
     redirect_to_list(&jar)
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct ToggleQuery {
+    #[serde(default)]
+    pub redirect: Option<String>,
+}
+
+/// `POST /admin/clients/:id/toggle` — toggle a client between active and disabled.
+pub async fn toggle(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    Path(id): Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<ToggleQuery>,
+) -> Response {
+    let client = match load_client(&state.pool, id).await {
+        Ok(Some(c)) => c,
+        _ => return redirect_to_list(&jar),
+    };
+
+    let new_status = if client.status == "active" {
+        "disabled"
+    } else {
+        "active"
+    };
+
+    let _ = sqlx::query("UPDATE clients SET status = ? WHERE id = ?")
+        .bind(new_status)
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+
+    reload(&state).await;
+
+    if query.redirect.as_deref() == Some("detail") {
+        decorate(Redirect::to(&format!("/admin/clients/{id}")).into_response(), Some(&jar))
+    } else {
+        redirect_to_list(&jar)
+    }
 }
 
 struct ParsedClientForm {
@@ -512,7 +781,7 @@ fn parse_client_form(form: &ClientForm) -> Result<ParsedClientForm, String> {
 
 async fn load_client(pool: &sqlx::SqlitePool, id: i64) -> crate::error::AppResult<Option<Client>> {
     sqlx::query_as::<_, Client>(
-        "SELECT id, inbound_id, uuid, name, quota_bytes, expiry_at, status, created_at \
+        "SELECT id, inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, mieru_username, mieru_password, created_at \
          FROM clients WHERE id = ?",
     )
     .bind(id)
@@ -524,7 +793,8 @@ async fn load_client(pool: &sqlx::SqlitePool, id: i64) -> crate::error::AppResul
 async fn current_inbound(state: &AppState) -> crate::error::AppResult<Option<Inbound>> {
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
-                status, created_at, updated_at \
+                xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
+                port_range, transport_protocol, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
     )
     .fetch_optional(&state.pool)
@@ -569,12 +839,35 @@ async fn reload(state: &AppState) {
         }
         Err(e) => tracing::error!(error = %e, "failed to re-render xray config"),
     }
+    let mieru_config_path = state.config.data_dir.join("mieru").join("config.json");
+    let _ = crate::mieru::render_to_file(&state.pool, &mieru_config_path).await;
+    let _ = state.mieru_tx.send(crate::mieru::MieruCommand::Reload).await;
 }
 
-fn render_form_error(jar: &CookieJar, client: Option<ClientView>, error: String) -> Response {
+async fn list_all_active_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<Inbound>> {
+    sqlx::query_as::<_, Inbound>(
+        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+                xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
+                port_range, transport_protocol, status, created_at, updated_at \
+         FROM inbounds WHERE status = 'active' ORDER BY id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(crate::error::AppError::Database)
+}
+
+fn render_form_error(
+    jar: &CookieJar,
+    client: Option<ClientView>,
+    inbounds: &[Inbound],
+    bound_inbound_ids: Vec<i64>,
+    error: String,
+) -> Response {
     let html = ClientsFormTemplate {
         csrf: csrf_from_cookies(jar),
         client,
+        inbounds: inbounds.iter().map(crate::web::inbound::InboundView::from).collect(),
+        bound_inbound_ids,
         error: Some(error),
     }
     .render()

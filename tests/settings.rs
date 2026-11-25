@@ -49,16 +49,24 @@ async fn boot() -> Harness {
     // The supervisor channel drains so RestartNow sends never block the handler.
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
+    let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
 
     let state = AppState {
         config: config.clone(),
         pool: pool.clone(),
         supervisor_tx: tx,
+        proxy_tx,
+        mieru_tx,
         update_jobs: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: Arc::new(
             three_r_ui::xray::Installer::new(config.xray_download_base.clone())
                 .expect("installer must be constructible"),
         ),
+        cert_tracker: Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
+        system_tracker: Arc::new(three_r_ui::web::system::SystemTracker::new()),
         shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
@@ -551,4 +559,126 @@ async fn run_update_pushes_failed_when_shutdown_initiated_before_download() {
         .expect("background task did not reach terminal stage within 3s");
     assert_eq!(terminal.stage, JobStage::Failed);
     assert_eq!(terminal.message, "panel shutdown");
+}
+
+#[tokio::test]
+async fn save_proxy_settings_and_mask_token() {
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+
+    // 1. Submit proxy settings update
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/proxy")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "csrf={csrf}&enabled=true&listen_port=9443&domain=test.example.com&cert_mode=cf_dns&cf_api_token=secret1234567890abcdef"
+        )))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    // 2. Fetch settings page and verify rendered values
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/settings")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = String::from_utf8(
+        resp.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(body.contains("test.example.com"));
+    assert!(body.contains("9443"));
+    // Verify token is masked
+    assert!(!body.contains("secret1234567890abcdef"));
+    assert!(body.contains("sec****cdef"));
+}
+
+#[tokio::test]
+async fn settings_page_shows_cert_directory_and_files() {
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+
+    // Generate and save a cert in data_dir/certs/panel.example.com
+    let (cert_pem, key_pem) =
+        three_r_ui::proxy::cert::generate_self_signed_cert("panel.example.com").unwrap();
+    three_r_ui::proxy::cert::save_cert_files(
+        &h.data_dir,
+        "panel.example.com",
+        &cert_pem,
+        &key_pem,
+    )
+    .unwrap();
+
+    // 1. Check HTML page renders cert directory
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/settings")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_text(resp).await;
+    assert!(body.contains("证书目录与文件"));
+    assert!(body.contains("panel.example.com"));
+    assert!(body.contains("fullchain.pem"));
+    assert!(body.contains("privkey.pem"));
+    assert!(body.contains("证书存储根目录"));
+
+    // 2. Check JSON endpoint
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/settings/certs")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let view: three_r_ui::proxy::cert::CertsDirView =
+        serde_json::from_slice(&json_bytes).unwrap();
+    assert!(view.exists);
+    assert_eq!(view.total_domains, 1);
+    assert_eq!(view.groups[0].domain, "panel.example.com");
+    assert_eq!(view.groups[0].files.len(), 2);
+
+    // 3. Download public certificate
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/settings/certs/download?domain=panel.example.com")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(content_type, "application/x-pem-file");
+    let downloaded_pem = body_text(resp).await;
+    assert!(downloaded_pem.contains("BEGIN CERTIFICATE"));
+
+    // 4. Path traversal attempt is rejected
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/settings/certs/download?domain=../../etc")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

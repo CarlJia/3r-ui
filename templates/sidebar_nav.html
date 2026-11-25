@@ -2,11 +2,96 @@
   <a class="brand" href="/admin">3R-UI</a>
   <p class="nav-label">管理</p>
   <nav aria-label="主菜单">
-    <a class="nav-link {% if nav_active == "dashboard" %}active{% endif %}" {% if nav_active == "dashboard" %}aria-current="page"{% endif %} href="/admin">控制台</a>
-    <a class="nav-link {% if nav_active == "inbound" %}active{% endif %}" {% if nav_active == "inbound" %}aria-current="page"{% endif %} href="/admin/inbound">入站配置</a>
-    <a class="nav-link {% if nav_active == "clients" %}active{% endif %}" {% if nav_active == "clients" %}aria-current="page"{% endif %} href="/admin/clients">用户列表</a>
-    <a class="nav-link nav-add {% if nav_active == "clients_new" %}active{% endif %}" {% if nav_active == "clients_new" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="/admin/clients/new">＋ 新增用户</a>
-    <a class="nav-link {% if nav_active == "logs" %}active{% endif %}" {% if nav_active == "logs" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="/admin/logs">连接日志</a>
-    <a class="nav-link {% if nav_active == "settings" %}active{% endif %}" {% if nav_active == "settings" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="/admin/settings">系统设置</a>
+    <a class="nav-link {% if nav_active == "dashboard" %}active{% endif %}" {% if nav_active == "dashboard" %}aria-current="page"{% endif %} href="/admin">
+      <span class="nav-icon">📊</span><span>控制台</span>
+    </a>
+    <a class="nav-link {% if nav_active == "inbound" %}active{% endif %}" {% if nav_active == "inbound" %}aria-current="page"{% endif %} href="/admin/inbound">
+      <span class="nav-icon">⚡</span><span>入站列表</span>
+    </a>
+    <a class="nav-link {% if nav_active == "clients" %}active{% endif %}" {% if nav_active == "clients" %}aria-current="page"{% endif %} href="/admin/clients">
+      <span class="nav-icon">👥</span><span>用户列表</span>
+    </a>
+    <a class="nav-link {% if nav_active == "logs" || nav_active == "xray_logs" %}active{% endif %}" {% if nav_active == "logs" || nav_active == "xray_logs" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="/admin/logs">
+      <span class="nav-icon">📋</span><span>日志记录</span>
+    </a>
+    <a class="nav-link {% if nav_active == "settings" %}active{% endif %}" {% if nav_active == "settings" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="/admin/settings">
+      <span class="nav-icon">⚙️</span><span>系统设置</span>
+    </a>
   </nav>
+  <div class="sidebar-footer">
+    <button id="theme-toggle-btn" class="theme-toggle-btn" type="button" aria-label="切换主题模式" title="点击切换：自动 / 深色 / 浅色">
+      <span class="theme-toggle-icon" id="theme-toggle-icon">🌓</span>
+      <span class="theme-toggle-label" id="theme-toggle-label">跟随系统</span>
+    </button>
+  </div>
 </aside>
+{% include "toast.html" %}
+<script>
+  (function () {
+    const THEME_KEY = '3r-ui-theme';
+    function getMode() {
+      try {
+        return localStorage.getItem(THEME_KEY) || 'auto';
+      } catch (e) {
+        return 'auto';
+      }
+    }
+    function updateUI(mode) {
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const isDark = mode === 'dark' || (mode === 'auto' && prefersDark);
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme-mode', mode);
+
+      const icon = document.getElementById('theme-toggle-icon');
+      const label = document.getElementById('theme-toggle-label');
+      if (icon && label) {
+        if (mode === 'dark') {
+          icon.textContent = '🌙';
+          label.textContent = '深色模式';
+        } else if (mode === 'light') {
+          icon.textContent = '☀️';
+          label.textContent = '浅色模式';
+        } else {
+          icon.textContent = prefersDark ? '🌓' : '🌗';
+          label.textContent = '跟随系统';
+        }
+      }
+    }
+
+    updateUI(getMode());
+
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
+        if (getMode() === 'auto') {
+          updateUI('auto');
+        }
+      });
+    }
+
+    const btn = document.getElementById('theme-toggle-btn');
+    if (btn) {
+      btn.addEventListener('click', function () {
+        const cur = getMode();
+        let next = 'auto';
+        let msg = '主题已切换为跟随系统';
+        if (cur === 'auto') {
+          next = 'dark';
+          msg = '主题已切换为深色模式';
+        } else if (cur === 'dark') {
+          next = 'light';
+          msg = '主题已切换为浅色模式';
+        } else {
+          next = 'auto';
+          msg = '主题已切换为跟随系统';
+        }
+        try {
+          localStorage.setItem(THEME_KEY, next);
+        } catch (e) {}
+        updateUI(next);
+        if (window.showToast) {
+          window.showToast(msg, 'info', 1800);
+        }
+      });
+    }
+  })();
+</script>

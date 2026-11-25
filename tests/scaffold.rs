@@ -51,7 +51,7 @@ async fn migrations_create_partial_unique_index() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     let idx_sql: String = sqlx::query_scalar(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND name='one_active_inbound'",
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_inbounds_port_active'",
     )
     .fetch_one(&pool)
     .await

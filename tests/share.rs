@@ -41,16 +41,24 @@ async fn boot() -> Harness {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
+    let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
 
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
+        proxy_tx,
+        mieru_tx,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
                 .expect("installer must be constructible"),
         ),
+        cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
+        system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
@@ -64,9 +72,9 @@ async fn boot_with_inbound_and_client() -> (Harness, i64) {
     let h = boot().await;
     sqlx::query(
         "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
-                public_key, short_id, status, created_at, updated_at) \
+                public_key, short_id, xhttp_path, status, created_at, updated_at) \
          VALUES (443, 'www.apple.com', 'www.apple.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
-                'active', unixepoch(), unixepoch())",
+                '/r/test0123456789ab', 'active', unixepoch(), unixepoch())",
     )
     .execute(&h.pool)
     .await
@@ -185,9 +193,9 @@ async fn detail_page_warns_when_public_host_is_unset() {
     .unwrap();
     sqlx::query(
         "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
-                public_key, short_id, status, created_at, updated_at) \
+                public_key, short_id, xhttp_path, status, created_at, updated_at) \
          VALUES (443, 'a.example', 'a.example', NULL, 'P', 'PUBKEY', 'ab', \
-                'active', unixepoch(), unixepoch())",
+                '/r/test0123456789ab', 'active', unixepoch(), unixepoch())",
     )
     .execute(&pool)
     .await
@@ -211,15 +219,23 @@ async fn detail_page_warns_when_public_host_is_unset() {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
+    let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
+        proxy_tx,
+        mieru_tx,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
                 .expect("installer must be constructible"),
         ),
+        cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
+        system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let app = web::router(state);
@@ -321,4 +337,48 @@ async fn detail_and_qr_require_a_session() {
         .unwrap();
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn hy2_share_uri_generation() {
+    let client = three_r_ui::db::models::Client {
+        id: 1,
+        inbound_id: 1,
+        uuid: "7c90d0c0-1234-4abc-9def-111122223333".into(),
+        name: Some("bob-node".into()),
+        quota_bytes: 0,
+        expiry_at: None,
+        status: "active".into(),
+        sub_token: Some("abc".into()),
+        mieru_username: Some("bob".into()),
+        mieru_password: Some("pwd123".into()),
+        created_at: None,
+    };
+    let inbound = three_r_ui::db::models::Inbound {
+        id: 1,
+        listen_port: 8443,
+        dest: "".into(),
+        sni: "hy2.example.com".into(),
+        server_name: None,
+        private_key: "".into(),
+        public_key: "".into(),
+        short_id: "".into(),
+        xhttp_path: None,
+        protocol: "hysteria2".into(),
+        cert_mode: "auto".into(),
+        custom_cert_path: "".into(),
+        custom_key_path: "".into(),
+        masquerade_url: "".into(),
+        port_range: "".into(),
+        transport_protocol: "TCP".into(),
+        status: "active".into(),
+        created_at: None,
+        updated_at: None,
+    };
+
+    let uri = three_r_ui::share::hy2::build_uri(&client, &inbound, "panel.example.com");
+    assert!(uri.starts_with("hysteria2://7c90d0c0-1234-4abc-9def-111122223333@panel.example.com:8443/?"));
+    assert!(uri.contains("sni=hy2.example.com"));
+    assert!(uri.contains("insecure=0"));
+    assert!(uri.ends_with("#bob-node"));
 }

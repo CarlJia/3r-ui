@@ -40,17 +40,25 @@ async fn boot() -> Harness {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     // Drain the supervisor channel so a Reload send never blocks the handler.
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
+    let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
 
     let data_dir = config.data_dir.clone();
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
+        proxy_tx,
+        mieru_tx,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
                 .expect("installer must be constructible"),
         ),
+        cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
+        system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
@@ -68,9 +76,9 @@ async fn boot_with_inbound() -> Harness {
     let h = boot().await;
     sqlx::query(
         "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
-                public_key, short_id, status, created_at, updated_at) \
+                public_key, short_id, xhttp_path, status, created_at, updated_at) \
          VALUES (8443, 'a.example', 'a.example', NULL, 'priv', 'PUBKEY', 'ab', \
-                'active', unixepoch(), unixepoch())",
+                '/r/test0123456789ab', 'active', unixepoch(), unixepoch())",
     )
     .execute(&h.pool)
     .await
@@ -167,10 +175,21 @@ async fn inbound_page_requires_a_session() {
 }
 
 #[tokio::test]
-async fn inbound_page_renders_an_empty_form() {
+async fn inbound_list_renders_empty_state_and_table() {
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
     let resp = get(&h, "/admin/inbound", &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(html.contains("尚未配置任何入站协议"));
+    assert!(html.contains("/admin/inbound/new"));
+}
+
+#[tokio::test]
+async fn inbound_page_renders_an_empty_form() {
+    let h = boot().await;
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, "/admin/inbound/new", &session).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
     let html = body_text(resp).await;
@@ -187,7 +206,7 @@ async fn empty_inbound_form_seeds_a_default_short_id() {
     // pre-generated default is the safety net.
     let h = boot().await;
     let (session, _csrf) = login(&h).await;
-    let resp = get(&h, "/admin/inbound", &session).await;
+    let resp = get(&h, "/admin/inbound/new", &session).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
     let html = body_text(resp).await;
@@ -212,13 +231,13 @@ async fn empty_inbound_form_seeds_a_default_short_id() {
 
 #[tokio::test]
 async fn inbound_page_echoes_current_config_after_save() {
-    // After a successful save the page must echo back every value the
+    // After a successful save the edit page must echo back every value the
     // operator just committed: port, dest, SNI, shortId, and the
     // server-generated public_key. Without the echo the operator cannot
     // verify what was saved without diffing against their input.
     let h = boot_with_inbound().await;
     let (session, _csrf) = login(&h).await;
-    let resp = get(&h, "/admin/inbound", &session).await;
+    let resp = get(&h, "/admin/inbound/1/edit", &session).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
     let html = body_text(resp).await;
@@ -287,7 +306,7 @@ async fn create_inbound_persists_and_renders_config() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=www.apple.com&sni=www.apple.com&short_id=abcd",
+        "listen_port=8443&dest=www.apple.com&sni=www.apple.com&short_id=abcd1234",
     )
     .await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
@@ -326,7 +345,7 @@ async fn config_json_is_owner_only() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=8443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
 
@@ -344,7 +363,7 @@ async fn stats_api_is_reachable_at_the_stats_client_address() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=8443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
 
@@ -397,7 +416,7 @@ async fn a_second_inbound_is_rejected() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=8443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
     assert_eq!(first.status(), StatusCode::SEE_OTHER);
@@ -418,7 +437,7 @@ async fn a_second_inbound_is_rejected() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=9443&dest=b.example&sni=b.example&short_id=cd",
+        "listen_port=9443&dest=example.com&sni=example.com&short_id=cd123456",
     )
     .await;
     assert_eq!(again.status(), StatusCode::SEE_OTHER);
@@ -434,7 +453,7 @@ async fn saving_again_updates_in_place_and_rotates_the_key() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=8443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
     let first_key: String =
@@ -448,7 +467,7 @@ async fn saving_again_updates_in_place_and_rotates_the_key() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=9443&dest=b.example&sni=b.example&short_id=cd",
+        "listen_port=9443&dest=example.com&sni=example.com&short_id=cd123456",
     )
     .await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
@@ -460,7 +479,7 @@ async fn saving_again_updates_in_place_and_rotates_the_key() {
             .unwrap();
     assert_eq!(rows.len(), 1, "save must update, not insert a second row");
     assert_eq!(rows[0].0, 9443);
-    assert_eq!(rows[0].1, "b.example");
+    assert_eq!(rows[0].1, "example.com");
     assert_ne!(rows[0].2, first_key, "editing rotates the REALITY keypair");
 
     let cfg = rendered_config(&h);
@@ -476,7 +495,7 @@ async fn delete_removes_the_inbound_from_the_rendered_config() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=8443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
     assert_eq!(user_inbounds(&rendered_config(&h)).len(), 1);
@@ -502,7 +521,7 @@ async fn invalid_port_is_rejected_with_a_message() {
             "/admin/inbound",
             &session,
             &csrf,
-            &format!("listen_port={bad}&dest=a.example&sni=a.example&short_id=ab"),
+            &format!("listen_port={bad}&dest=example.com&sni=example.com&short_id=abcd1234"),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "port {bad:?}");
@@ -523,8 +542,8 @@ async fn blank_dest_or_sni_is_rejected() {
     let (session, csrf) = login(&h).await;
 
     for body in [
-        "listen_port=443&dest=&sni=a.example&short_id=ab",
-        "listen_port=443&dest=a.example&sni=&short_id=ab",
+        "listen_port=443&dest=&sni=example.com&short_id=abcd1234",
+        "listen_port=443&dest=www.apple.com&sni=&short_id=abcd1234",
     ] {
         let resp = post(&h, "/admin/inbound", &session, &csrf, body).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -543,7 +562,7 @@ async fn non_hex_short_id_is_rejected() {
             "/admin/inbound",
             &session,
             &csrf,
-            &format!("listen_port=443&dest=a.example&sni=a.example&short_id={bad}"),
+            &format!("listen_port=443&dest=example.com&sni=example.com&short_id={bad}"),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "short_id {bad:?}");
@@ -561,7 +580,7 @@ async fn duplicate_port_is_reported_clearly() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
     // Free the single-inbound guard by soft-deleting, then try to reuse the
@@ -575,7 +594,7 @@ async fn duplicate_port_is_reported_clearly() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
     let resp = post(
@@ -583,7 +602,7 @@ async fn duplicate_port_is_reported_clearly() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=443&dest=c.example&sni=c.example&short_id=ef",
+        "listen_port=443&dest=example.com&sni=example.com&short_id=ef123456",
     )
     .await;
 
@@ -605,18 +624,21 @@ async fn inbound_page_shows_the_public_key_after_creation() {
         "/admin/inbound",
         &session,
         &csrf,
-        "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
+        "listen_port=8443&dest=example.com&sni=example.com&short_id=abcd1234",
     )
     .await;
 
-    let public_key: String =
-        sqlx::query_scalar("SELECT public_key FROM inbounds WHERE status='active'")
+    let (inbound_id, public_key): (i64, String) =
+        sqlx::query_as("SELECT id, public_key FROM inbounds WHERE status='active'")
             .fetch_one(&h.pool)
             .await
             .unwrap();
-    let html = body_text(get(&h, "/admin/inbound", &session).await).await;
+    let html = body_text(get(&h, &format!("/admin/inbound/{inbound_id}/edit"), &session).await).await;
     assert!(html.contains(&public_key), "public key should be displayed");
     assert!(html.contains("8443"), "port should be prefilled");
+
+    let list_html = body_text(get(&h, "/admin/inbound", &session).await).await;
+    assert!(list_html.contains("8443"), "port should appear in list");
 }
 
 #[tokio::test]
@@ -631,7 +653,7 @@ async fn inbound_mutation_requires_csrf() {
         .header("cookie", format!("session={session}; csrf={_csrf}"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(Body::from(
-            "listen_port=8443&dest=a.example&sni=a.example&short_id=ab",
+            "listen_port=8443&dest=example.com&sni=example.com&short_id=abcd1234",
         ))
         .unwrap();
     let resp = h.app.clone().oneshot(req).await.unwrap();
@@ -642,4 +664,47 @@ async fn inbound_mutation_requires_csrf() {
         .await
         .unwrap();
     assert_eq!(count, 0, "a CSRF failure must not write anything");
+}
+
+#[tokio::test]
+async fn inbound_toggle_enables_and_disables() {
+    let h = boot_with_inbound().await;
+    let (session, csrf) = login(&h).await;
+
+    let (inbound_id, status): (i64, String) =
+        sqlx::query_as("SELECT id, status FROM inbounds WHERE status='active'")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "active");
+
+    // Toggle to disable
+    let resp = post(&h, &format!("/admin/inbound/{inbound_id}/toggle"), &session, &csrf, "").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM inbounds WHERE id = ?")
+        .bind(inbound_id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "disabled");
+
+    let html = body_text(get(&h, "/admin/inbound", &session).await).await;
+    assert!(html.contains("已禁用"));
+    assert!(html.contains("启用"));
+
+    // Toggle back to active
+    let resp = post(&h, &format!("/admin/inbound/{inbound_id}/toggle"), &session, &csrf, "").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM inbounds WHERE id = ?")
+        .bind(inbound_id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "active");
+
+    let html = body_text(get(&h, "/admin/inbound", &session).await).await;
+    assert!(html.contains("启用"));
+    assert!(html.contains("禁用"));
 }

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xray 运行日志 - 3R-UI</title>
+  {% include "theme_head.html" %}
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input, select { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+      .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
+      .tab-inactive { background: #2c3037 !important; color: #e6e8eb !important; }
+    }
+    html[data-theme="dark"] body { background: #16181d; color: #e6e8eb; }
+    html[data-theme="dark"] header, html[data-theme="dark"] .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+    html[data-theme="dark"] input, html[data-theme="dark"] select { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+    html[data-theme="dark"] .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
+    html[data-theme="dark"] .tab-inactive { background: #2c3037 !important; color: #e6e8eb !important; }
+
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .btn {
+      padding: 6px 12px; font-size: 13px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    .log-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .log-tab {
+      padding: 7px 16px; font-size: 13px; font-weight: 600; border-radius: 8px;
+      text-decoration: none; display: inline-block;
+    }
+    .log-tab.active { background: #3b82f6; color: #fff; }
+    .log-tab:not(.active) { background: #e8eaed; color: #1c2024; }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+      margin-bottom: 14px; font-size: 13px;
+    }
+    .toolbar-left, .toolbar-right { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .toolbar input[type="text"] {
+      padding: 6px 10px; font-size: 13px; border-radius: 6px; border: 1px solid #d5d9de;
+      width: 220px;
+    }
+    .toolbar select {
+      padding: 6px 10px; font-size: 13px; border-radius: 6px; border: 1px solid #d5d9de;
+    }
+
+    .terminal-window {
+      background: #14161a; color: #d1d5db; border: 1px solid #262a30; border-radius: 10px;
+      padding: 14px 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px; line-height: 1.6; height: 580px; overflow-y: auto; overflow-x: auto;
+      white-space: pre; word-break: break-all;
+    }
+
+    .log-line { display: block; }
+    .log-line.log-info { color: #60a5fa; }
+    .log-line.log-warn { color: #fbbf24; }
+    .log-line.log-error { color: #f87171; font-weight: bold; background: rgba(239, 68, 68, 0.1); }
+
+    .status-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: #10b981; margin-right: 6px;
+    }
+    .status-dot.paused { background: #f59e0b; }
+
+    {% include "sidebar_style.html" %}
+  </style>
+</head>
+<body>
+  {% let nav_active = "xray_logs" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
+  <header>
+    <h1>日志记录</h1>
+  </header>
+  <main>
+    <!-- 顶部日志类型选项卡 -->
+    <div class="log-tabs">
+      <a href="/admin/logs" class="log-tab tab-inactive">连接访问记录</a>
+      <a href="/admin/logs/xray" class="log-tab active">Xray 运行日志</a>
+    </div>
+
+    <section class="card" style="padding: 16px;">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:500;">
+            <input type="checkbox" id="auto-refresh" checked style="width:auto; margin:0;">
+            <span class="status-dot" id="live-dot"></span>实时自动刷新 (2s)
+          </label>
+          <input type="text" id="keyword-filter" placeholder="搜索关键词过滤…">
+          <select id="level-filter">
+            <option value="all">全部级别</option>
+            <option value="error">仅报错 (Error / Failed)</option>
+            <option value="warn">仅警告 (Warning)</option>
+            <option value="info">仅信息 (Info)</option>
+          </select>
+        </div>
+        <div class="toolbar-right">
+          <span style="opacity:0.65; font-size:12px;" id="line-counter">共 {{ line_count }} 行</span>
+          <button class="btn btn-secondary" type="button" id="refresh-btn">刷新</button>
+          <button class="btn btn-secondary" type="button" id="copy-btn">复制日志</button>
+          <button class="btn btn-secondary" type="button" id="clear-btn">清空显示</button>
+        </div>
+      </div>
+
+      <div style="font-size: 11px; opacity: 0.6; margin-bottom: 8px; font-family: monospace;">
+        日志文件：{{ log_path }}
+      </div>
+
+      <div class="terminal-window" id="log-terminal">{{ initial_logs }}</div>
+    </section>
+  </main>
+  </div>
+
+  <script>
+    (function () {
+      const terminal = document.getElementById('log-terminal');
+      const autoRefreshChk = document.getElementById('auto-refresh');
+      const liveDot = document.getElementById('live-dot');
+      const keywordFilter = document.getElementById('keyword-filter');
+      const levelFilter = document.getElementById('level-filter');
+      const lineCounter = document.getElementById('line-counter');
+      const refreshBtn = document.getElementById('refresh-btn');
+      const copyBtn = document.getElementById('copy-btn');
+      const clearBtn = document.getElementById('clear-btn');
+
+      let rawLines = [];
+      if (terminal.textContent) {
+        rawLines = terminal.textContent.split('\n');
+      }
+
+      function classifyLine(line) {
+        if (/failed to start|panic:|\[error\]|fatal/i.test(line)) {
+          return 'log-line log-error';
+        }
+        if (/\[warning\]|warn/i.test(line)) {
+          return 'log-line log-warn';
+        }
+        if (/\[info\]|reading config/i.test(line)) {
+          return 'log-line log-info';
+        }
+        return 'log-line';
+      }
+
+      function renderLines() {
+        const kw = keywordFilter.value.trim().toLowerCase();
+        const lvl = levelFilter.value;
+
+        const filtered = rawLines.filter(line => {
+          if (!line) return false;
+          if (kw && !line.toLowerCase().includes(kw)) {
+            return false;
+          }
+          if (lvl === 'error') {
+            return /failed to start|panic:|\[error\]|fatal/i.test(line);
+          }
+          if (lvl === 'warn') {
+            return /\[warning\]|warn/i.test(line);
+          }
+          if (lvl === 'info') {
+            return /\[info\]/i.test(line);
+          }
+          return true;
+        });
+
+        lineCounter.textContent = '显示 ' + filtered.length + ' / ' + rawLines.length + ' 行';
+
+        // 检查是否滚动在底部附近
+        const isNearBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 60;
+
+        terminal.innerHTML = '';
+        const fragment = document.createDocumentFragment();
+        filtered.forEach(line => {
+          const div = document.createElement('div');
+          div.className = classifyLine(line);
+          div.textContent = line;
+          fragment.appendChild(div);
+        });
+        terminal.appendChild(fragment);
+
+        if (isNearBottom || terminal.scrollTop === 0) {
+          terminal.scrollTop = terminal.scrollHeight;
+        }
+      }
+
+      function fetchLogs() {
+        fetch('/admin/logs/xray/raw?tail=500')
+          .then(r => r.json())
+          .then(data => {
+            if (data && Array.isArray(data.lines)) {
+              rawLines = data.lines;
+              renderLines();
+            }
+          })
+          .catch(() => {});
+      }
+
+      let intervalId = null;
+      function updatePolling() {
+        if (autoRefreshChk.checked) {
+          liveDot.classList.remove('paused');
+          if (!intervalId) {
+            intervalId = setInterval(fetchLogs, 2000);
+          }
+        } else {
+          liveDot.classList.add('paused');
+          if (intervalId) {
+            clearInterval(intervalId);
+            intervalId = null;
+          }
+        }
+      }
+
+      autoRefreshChk.addEventListener('change', updatePolling);
+      keywordFilter.addEventListener('input', renderLines);
+      levelFilter.addEventListener('change', renderLines);
+
+      refreshBtn.addEventListener('click', () => {
+        fetchLogs();
+      });
+
+      clearBtn.addEventListener('click', () => {
+        rawLines = [];
+        renderLines();
+      });
+
+      copyBtn.addEventListener('click', () => {
+        const text = rawLines.join('\n');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(() => {
+            if (window.showToast) window.showToast('日志已复制到剪贴板', 'success', 2000);
+          });
+        }
+      });
+
+      renderLines();
+      terminal.scrollTop = terminal.scrollHeight;
+      updatePolling();
+    })();
+  </script>
+</body>
+</html>

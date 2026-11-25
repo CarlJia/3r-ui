@@ -18,6 +18,14 @@ pub struct Inbound {
     pub private_key: String,
     pub public_key: String,
     pub short_id: String,
+    pub xhttp_path: Option<String>,
+    pub protocol: String,
+    pub cert_mode: String,
+    pub custom_cert_path: String,
+    pub custom_key_path: String,
+    pub masquerade_url: String,
+    pub port_range: String,
+    pub transport_protocol: String,
     pub status: String,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
@@ -32,6 +40,9 @@ pub struct Client {
     pub quota_bytes: i64,
     pub expiry_at: Option<i64>,
     pub status: String,
+    pub sub_token: Option<String>,
+    pub mieru_username: Option<String>,
+    pub mieru_password: Option<String>,
     pub created_at: Option<i64>,
 }
 
@@ -66,4 +77,43 @@ pub struct ConnectionLog {
     pub reason: Option<String>,
     pub raw_message: String,
     pub received_at: i64,
+}
+
+/// Pingora 反向代理与证书管理配置记录。
+#[derive(Debug, Clone, FromRow, serde::Serialize, serde::Deserialize)]
+pub struct ProxySettings {
+    pub id: i64,
+    pub enabled: i64,
+    pub listen_port: i64,
+    pub domain: String,
+    pub cert_mode: String,
+    pub cf_api_token: String,
+    pub cf_zone_id: String,
+    pub custom_cert_path: String,
+    pub custom_key_path: String,
+    pub cert_expires_at: Option<i64>,
+    pub last_renewed_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub updated_at: i64,
+}
+
+impl ProxySettings {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled == 1
+    }
+
+    /// 返回脱敏后的 Cloudflare API Token 用于前端回显
+    pub fn masked_cf_token(&self) -> String {
+        if self.cf_api_token.is_empty() {
+            String::new()
+        } else if self.cf_api_token.len() <= 8 {
+            "********".to_string()
+        } else {
+            format!(
+                "{}****{}",
+                &self.cf_api_token[..3],
+                &self.cf_api_token[self.cf_api_token.len() - 4..]
+            )
+        }
+    }
 }

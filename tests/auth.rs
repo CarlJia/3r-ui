@@ -32,15 +32,21 @@ async fn boot() -> (axum::Router, tempfile::TempDir, sqlx::SqlitePool) {
     .unwrap();
 
     let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    let (proxy_tx, _proxy_rx) = tokio::sync::mpsc::channel(4);
+    let (mieru_tx, _mieru_rx) = tokio::sync::mpsc::channel(4);
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
+        proxy_tx,
+        mieru_tx,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
                 .expect("installer must be constructible"),
         ),
+        cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
+        system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     (web::router(state), dir, pool)
@@ -217,6 +223,33 @@ async fn admin_renders_for_an_authenticated_session() {
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let html = String::from_utf8_lossy(&body);
     assert!(html.contains("admin"), "dashboard should greet the admin");
+    assert!(html.contains("系统运行状态与硬件负载"));
+    assert!(html.contains("CPU 使用率"));
+    assert!(html.contains("内存使用量"));
+    assert!(html.contains("硬盘存储"));
+    assert!(html.contains("网络吞吐速率"));
+    assert!(html.contains("系统负载"));
+}
+
+#[tokio::test]
+async fn system_status_api_returns_json_metrics() {
+    let (app, _dir, _pool) = boot().await;
+    let (session, _csrf) = login(&app, "s3cret-admin-pw").await;
+
+    let req = Request::builder()
+        .uri("/admin/api/system-status")
+        .header("cookie", format!("session={session}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let metrics: three_r_ui::web::system::SystemMetrics =
+        serde_json::from_slice(&body).expect("valid SystemMetrics JSON");
+    assert!(metrics.cpu_cores >= 1);
+    assert!(!metrics.hostname.is_empty());
+    assert!(!metrics.uptime_formatted.is_empty());
 }
 
 #[tokio::test]

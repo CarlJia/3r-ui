@@ -24,7 +24,7 @@ REBUILD=false
 EXPLICIT_PORT=""
 EXPLICIT_DATA=""
 OPEN_BROWSER=false
-PUBLIC_HOST=""
+PUBLIC_HOST="${PUBLIC_HOST:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -44,10 +44,8 @@ done
 # ---- 1. Build ----------------------------------------------------------
 
 BIN="$REPO_ROOT/target/release/3r-ui"
-if [ "$REBUILD" = true ] || [ ! -x "$BIN" ]; then
-    echo "[dev] building release binary..."
-    cargo build --release
-fi
+echo "[dev] building release binary..."
+cargo build --release
 test -x "$BIN" || { echo "[dev] binary missing at $BIN" >&2; exit 1; }
 
 # ---- 2. Pick a free port -----------------------------------------------

@@ -1,12 +1,14 @@
 //! VLESS URI construction.
 //!
 //! Format (per xray-core VLESS spec, REALITY transport):
-//!   `vless://<uuid>@<host>:<port>?type=xhttp&security=reality&pbk=<pb>&sni=<sni>&sid=<sid>&fp=chrome#<name>`
+//!   `vless://<uuid>@<host>:<port>?type=xhttp&security=reality&pbk=<pb>&sni=<sni>&sid=<sid>&path=<path>&fp=chrome#<name>`
 //!
 //! The query parameters used here match what xray-core ≥ 1.8 expects: `type`
 //! (transport) is `xhttp`; `security` is `reality`; `pbk` is the REALITY
 //! public key base64url; `sni` and `sid` are passed through verbatim;
-//! `fp=chrome` is the uTLS fingerprint that REALITY clients impersonate.
+//! `path` is the inbound's `xhttpSettings.path` so a client hits the same
+//! non-root path the server serves; `fp=chrome` is the uTLS fingerprint that
+//! REALITY clients impersonate.
 
 use urlencoding::encode;
 
@@ -19,14 +21,19 @@ use crate::db::models::{Client, Inbound};
 pub fn build_uri(client: &Client, inbound: &Inbound, host: &str) -> String {
     let name = client.name.clone().unwrap_or_else(|| "3r-ui".to_string());
     let tag = encode(&tag_for(&name));
+    // The rendered config uses `effective_xhttp_path`, so the share link must
+    // use the same value or the client would request a path the inbound
+    // never answers on (`/` by default) and hang on connect.
+    let path = encode(&crate::xray::config::effective_xhttp_path(inbound));
     format!(
-        "vless://{uuid}@{host}:{port}?type=xhttp&security=reality&pbk={pbk}&sni={sni}&sid={sid}&fp=chrome#{tag}",
+        "vless://{uuid}@{host}:{port}?type=xhttp&security=reality&pbk={pbk}&sni={sni}&sid={sid}&path={path}&fp=chrome#{tag}",
         uuid = client.uuid,
         host = host,
         port = inbound.listen_port,
         pbk = inbound.public_key,
         sni = encode(&inbound.sni),
         sid = encode(&inbound.short_id),
+        path = path,
         tag = tag,
     )
 }
@@ -76,6 +83,14 @@ mod tests {
             private_key: "PRIVATE".into(),
             public_key: "PUBKEY".into(),
             short_id: "abcd".into(),
+            xhttp_path: Some("/r/abcdef0123456789".into()),
+            protocol: "vless".into(),
+            cert_mode: "reality".into(),
+            custom_cert_path: "".into(),
+            custom_key_path: "".into(),
+            masquerade_url: "".into(),
+            port_range: "".into(),
+            transport_protocol: "TCP".into(),
             status: "active".into(),
             created_at: None,
             updated_at: None,
@@ -91,6 +106,9 @@ mod tests {
             quota_bytes: 0,
             expiry_at: None,
             status: "active".into(),
+            sub_token: Some("token123".into()),
+            mieru_username: Some("user1".into()),
+            mieru_password: Some("pass1".into()),
             created_at: None,
         }
     }
@@ -109,6 +127,7 @@ mod tests {
             "pbk=PUBKEY",
             "sni=www.apple.com",
             "sid=abcd",
+            "path=%2Fr%2Fabcdef0123456789",
             "fp=chrome",
             "#alice",
         ] {

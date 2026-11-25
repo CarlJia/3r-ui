@@ -8,7 +8,7 @@
 use askama::Template;
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum_extra::extract::cookie::CookieJar;
 use sqlx::SqlitePool;
 
@@ -29,6 +29,7 @@ pub struct LogsFilters {
     pub to: String,
     pub status: String,
     pub page: i64,
+    pub range: String,
     /// 模板用的 URL 编码 uuid（askama 不能调方法，故预计算成字段）。
     pub url_encoded_uuid: String,
 }
@@ -116,22 +117,74 @@ pub async fn list(
 /// 解析并 sanitize 查询参数。非法值回退到默认（不报错不 400）：
 /// `status` 非 accepted/rejected 视为无筛选；`page` 解析失败回退 1；
 /// 超长字段截断到 64 字。
+/// 未指定时间筛选时，默认查询最近 7 天。
 fn parse_filters(params: &std::collections::HashMap<String, String>) -> LogsFilters {
-    let mut filters = LogsFilters::default();
+    let mut filters = LogsFilters {
+        page: 1,
+        ..Default::default()
+    };
+
+    let now = crate::crypto::session::now_unix();
+    let today = timestamp_to_date(now);
+    let week_ago = timestamp_to_date(now - 7 * 86400);
+    let month_ago = timestamp_to_date(now - 30 * 86400);
+
+    if let Some(range) = params.get("range").map(|s| s.trim()) {
+        match range {
+            "today" => {
+                filters.from = today.clone();
+                filters.to = today.clone();
+                filters.range = "today".to_string();
+            }
+            "week" => {
+                filters.from = week_ago.clone();
+                filters.to = today.clone();
+                filters.range = "week".to_string();
+            }
+            "month" => {
+                filters.from = month_ago.clone();
+                filters.to = today.clone();
+                filters.range = "month".to_string();
+            }
+            "all" => {
+                filters.from = String::new();
+                filters.to = String::new();
+                filters.range = "all".to_string();
+            }
+            _ => {}
+        }
+    }
+
+    if filters.range.is_empty() {
+        if params.contains_key("from") || params.contains_key("to") {
+            if let Some(from) = params.get("from").map(|s| s.trim().to_string()) {
+                filters.from = from;
+            }
+            if let Some(to) = params.get("to").map(|s| s.trim().to_string()) {
+                filters.to = to;
+            }
+            if filters.from == today && filters.to == today {
+                filters.range = "today".to_string();
+            } else if filters.from == week_ago && filters.to == today {
+                filters.range = "week".to_string();
+            } else if filters.from == month_ago && filters.to == today {
+                filters.range = "month".to_string();
+            } else if filters.from.is_empty() && filters.to.is_empty() {
+                filters.range = "all".to_string();
+            } else {
+                filters.range = "custom".to_string();
+            }
+        } else {
+            // 默认查询最近 7 天
+            filters.from = week_ago;
+            filters.to = today;
+            filters.range = "week".to_string();
+        }
+    }
 
     if let Some(uuid) = params.get("uuid").map(|s| s.trim().to_string()) {
         if !uuid.is_empty() {
             filters.uuid = uuid.chars().take(64).collect();
-        }
-    }
-    if let Some(from) = params.get("from").map(|s| s.trim().to_string()) {
-        if !from.is_empty() {
-            filters.from = from;
-        }
-    }
-    if let Some(to) = params.get("to").map(|s| s.trim().to_string()) {
-        if !to.is_empty() {
-            filters.to = to;
         }
     }
     if let Some(status) = params.get("status").map(|s| s.trim().to_string()) {
@@ -215,6 +268,15 @@ fn truncate_preview(raw: &str, max: usize) -> String {
     format!("{head}…")
 }
 
+pub(crate) fn timestamp_to_date(ts: i64) -> String {
+    const FMT: &[time::format_description::BorrowedFormatItem<'_>] =
+        time::macros::format_description!("[year]-[month]-[day]");
+    time::OffsetDateTime::from_unix_timestamp(ts)
+        .ok()
+        .and_then(|t| t.format(&FMT).ok())
+        .unwrap_or_default()
+}
+
 pub(crate) fn timestamp_to_iso(ts: i64) -> String {
     const FMT: &[time::format_description::BorrowedFormatItem<'_>] =
         time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
@@ -222,4 +284,86 @@ pub(crate) fn timestamp_to_iso(ts: i64) -> String {
         .ok()
         .and_then(|t| t.format(&FMT).ok())
         .unwrap_or_else(|| ts.to_string())
+}
+
+#[derive(Template)]
+#[template(path = "xray_logs.html", escape = "html")]
+struct XrayLogsTemplate {
+    log_path: String,
+    initial_logs: String,
+    line_count: usize,
+}
+
+pub async fn xray_logs_page(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+) -> Response {
+    let log_path = state.config.data_dir.join("xray.log");
+    let (lines, count) = read_tail_lines(&log_path, 300).await;
+    let initial_logs = lines.join("\n");
+    let html = XrayLogsTemplate {
+        log_path: log_path.display().to_string(),
+        initial_logs,
+        line_count: count,
+    }
+    .render()
+    .unwrap_or_else(|e| format!("template render error: {e}"));
+
+    render_page(jar, StatusCode::OK, html)
+}
+
+#[derive(serde::Deserialize)]
+pub struct TailQuery {
+    #[serde(default = "default_tail")]
+    pub tail: usize,
+}
+
+fn default_tail() -> usize {
+    300
+}
+
+pub async fn xray_logs_raw(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    Query(query): Query<TailQuery>,
+) -> Response {
+    let log_path = state.config.data_dir.join("xray.log");
+    let (lines, count) = read_tail_lines(&log_path, query.tail.clamp(10, 2000)).await;
+    axum::Json(serde_json::json!({
+        "log_path": log_path.display().to_string(),
+        "lines": lines,
+        "count": count,
+    }))
+    .into_response()
+}
+
+async fn read_tail_lines(path: &std::path::Path, limit: usize) -> (Vec<String>, usize) {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(_) => return (Vec::new(), 0),
+    };
+    let meta = match file.metadata().await {
+        Ok(m) => m,
+        Err(_) => return (Vec::new(), 0),
+    };
+    let len = meta.len();
+    if len == 0 {
+        return (Vec::new(), 0);
+    }
+    let read_size = len.min(256 * 1024);
+    let seek_pos = len - read_size;
+    let _ = file.seek(std::io::SeekFrom::Start(seek_pos)).await;
+    let mut buf = vec![0u8; read_size as usize];
+    let _ = file.read_exact(&mut buf).await;
+    let content = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = content.lines().collect();
+    if seek_pos > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let total_in_chunk = lines.len();
+    let start = total_in_chunk.saturating_sub(limit);
+    let selected: Vec<String> = lines[start..].iter().map(|s| s.to_string()).collect();
+    (selected, total_in_chunk)
 }

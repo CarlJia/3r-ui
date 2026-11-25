@@ -21,6 +21,12 @@ pub enum AppError {
     #[error("xray error: {0}")]
     Xray(String),
 
+    #[error("proxy error: {0}")]
+    Proxy(String),
+
+    #[error("mieru error: {0}")]
+    Mieru(String),
+
     #[error("http error: {0}")]
     Http(String),
 }

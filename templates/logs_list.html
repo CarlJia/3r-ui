@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>3R-UI 连接日志</title>
+  <title>3R-UI 访问记录</title>
+  {% include "theme_head.html" %}
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
@@ -22,6 +23,16 @@
       .status-accepted { background: #16351f !important; color: #6ee7a0 !important; }
       .status-rejected { background: #3a1f22 !important; color: #ff9b9b !important; }
       .uuid { background: #16181d !important; }
+      .btn-quick {
+        background: #25282e !important; color: #e6e8eb !important; border-color: #363a42 !important;
+      }
+      .btn-quick:hover {
+        background: #2f343c !important; border-color: #484e58 !important;
+      }
+      .btn-quick.active {
+        background: #3b82f6 !important; color: #fff !important; border-color: #3b82f6 !important;
+      }
+      .tab-inactive { background: #2c3037 !important; color: #e6e8eb !important; }
     }
     header {
       display: flex; align-items: center; justify-content: space-between;
@@ -35,6 +46,26 @@
     }
     .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
     .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    .quick-ranges {
+      display: flex; gap: 8px; align-items: center; margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .quick-label {
+      font-size: 13px; font-weight: 500; opacity: .75; margin-right: 2px;
+    }
+    .btn-quick {
+      padding: 5px 12px; font-size: 12px; font-weight: 500;
+      border-radius: 6px; border: 1px solid #d5d9de;
+      background: #f4f5f7; color: #1c2024; text-decoration: none;
+      cursor: pointer; display: inline-flex; align-items: center;
+      transition: all 0.15s ease;
+    }
+    .btn-quick:hover {
+      background: #e8eaed; border-color: #c4c8cd;
+    }
+    .btn-quick.active {
+      background: #3b82f6; color: #fff; border-color: #3b82f6; font-weight: 600;
+    }
     .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
                gap: 0 12px; align-items: end; }
     .filters label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 4px; }
@@ -85,12 +116,29 @@
   {% include "sidebar_nav.html" %}
   <div class="content">
   <header>
-    <h1>连接日志</h1>
+    <h1>日志记录</h1>
   </header>
   <main>
+    <div style="display:flex; gap:8px; margin-bottom:16px;">
+      <a href="/admin/logs" style="padding:7px 16px; font-size:13px; font-weight:600; border-radius:8px; text-decoration:none; background:#3b82f6; color:#fff;">连接访问记录</a>
+      <a href="/admin/logs/xray" style="padding:7px 16px; font-size:13px; font-weight:600; border-radius:8px; text-decoration:none; background:#e8eaed; color:#1c2024;" class="tab-inactive">Xray 运行日志</a>
+    </div>
+
     <section class="card">
       <h2>访问记录</h2>
-      <p class="hint">xray 入站每次连接请求的访问日志；默认展示最近 50 条，可按用户 / 时间 / 结果筛选。</p>
+      <p class="hint">xray 入站每次连接请求的访问记录；时间默认最近 7 天，支持快捷查询与按用户 / 结果筛选。</p>
+
+      <div class="quick-ranges">
+        <span class="quick-label">快捷查询：</span>
+        <a href="/admin/logs?range=today{% if !filters.uuid.is_empty() %}&uuid={{ filters.url_encoded_uuid }}{% endif %}{% if !filters.status.is_empty() %}&status={{ filters.status }}{% endif %}"
+           class="btn-quick {% if filters.range == "today" %}active{% endif %}" data-range="today">今天</a>
+        <a href="/admin/logs?range=week{% if !filters.uuid.is_empty() %}&uuid={{ filters.url_encoded_uuid }}{% endif %}{% if !filters.status.is_empty() %}&status={{ filters.status }}{% endif %}"
+           class="btn-quick {% if filters.range == "week" %}active{% endif %}" data-range="week">一周</a>
+        <a href="/admin/logs?range=month{% if !filters.uuid.is_empty() %}&uuid={{ filters.url_encoded_uuid }}{% endif %}{% if !filters.status.is_empty() %}&status={{ filters.status }}{% endif %}"
+           class="btn-quick {% if filters.range == "month" %}active{% endif %}" data-range="month">一个月</a>
+        <a href="/admin/logs?range=all{% if !filters.uuid.is_empty() %}&uuid={{ filters.url_encoded_uuid }}{% endif %}{% if !filters.status.is_empty() %}&status={{ filters.status }}{% endif %}"
+           class="btn-quick {% if filters.range == "all" %}active{% endif %}" data-range="all">全部</a>
+      </div>
 
       <form method="get" action="/admin/logs" class="filters">
         <div>
@@ -175,5 +223,45 @@
     </section>
   </main>
   </div>
+
+  <script>
+    (function () {
+      const fromInput = document.getElementById('f-from');
+      const toInput = document.getElementById('f-to');
+      const form = document.querySelector('form.filters');
+
+      function fmtDate(d) {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return year + '-' + month + '-' + day;
+      }
+
+      document.querySelectorAll('.btn-quick').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+          e.preventDefault();
+          const range = btn.getAttribute('data-range');
+          const now = new Date();
+          if (range === 'today') {
+            const todayStr = fmtDate(now);
+            fromInput.value = todayStr;
+            toInput.value = todayStr;
+          } else if (range === 'week') {
+            const past = new Date(now.getTime() - 7 * 86400000);
+            fromInput.value = fmtDate(past);
+            toInput.value = fmtDate(now);
+          } else if (range === 'month') {
+            const past = new Date(now.getTime() - 30 * 86400000);
+            fromInput.value = fmtDate(past);
+            toInput.value = fmtDate(now);
+          } else if (range === 'all') {
+            fromInput.value = '';
+            toInput.value = '';
+          }
+          form.submit();
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 入站列表</title>
+  {% include "theme_head.html" %}
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+      .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+      .btn-primary { background: #3b82f6 !important; }
+      .btn-danger { background: #4a2226 !important; color: #ff9b9b !important; }
+      .btn-secondary { background: #2c3037 !important; color: #e6e8eb !important; }
+      table th, table td { border-color: #2c3037 !important; }
+      .status-active { background: #16351f !important; color: #6ee7a0 !important; }
+      .status-disabled { background: #3a1f22 !important; color: #ff9b9b !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    main { max-width: 960px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    .actions { display: flex; gap: 8px; align-items: center; }
+    button, .btn {
+      padding: 8px 14px; font-size: 13px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #2f6fd8; }
+    .btn-danger { background: #fdecec; color: #a4262c; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    .btn-secondary:hover { background: #d8dadf; }
+    .error {
+      background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
+      border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid #e3e6ea; text-align: left; vertical-align: middle; }
+    th { font-size: 12px; opacity: .7; font-weight: 600; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+    .badge-vless { background: #eff6ff; color: #2563eb; }
+    .badge-hy2 { background: #fdf2f8; color: #db2777; }
+    .badge-mieru { background: #f3e8ff; color: #7e22ce; }
+    .status {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+    }
+    .status-active { background: #e3f5e9; color: #1a7f42; }
+    .status-disabled { background: #fdecec; color: #a4262c; }
+    .empty-state { text-align: center; padding: 48px 16px; }
+    .empty-state p { font-size: 14px; opacity: .7; margin-bottom: 16px; }
+    {% include "sidebar_style.html" %}
+  </style>
+</head>
+<body>
+  {% let nav_active = "inbound" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
+  <header>
+    <h1>入站列表</h1>
+    <a href="/admin/inbound/new" class="btn btn-primary">+ 添加新入站</a>
+  </header>
+  <main>
+    {% if let Some(err) = error %}
+    <div class="error" role="alert">{{ err }}</div>
+    {% endif %}
+
+    <section class="card" style="padding:0; overflow:hidden;">
+      {% if inbounds.is_empty() %}
+      <div class="empty-state">
+        <p>尚未配置任何入站协议</p>
+        <a href="/admin/inbound/new" class="btn btn-primary">+ 立即添加入站</a>
+      </div>
+      {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>协议</th>
+            <th>监听端口</th>
+            <th>SNI / 域名</th>
+            <th>传输与伪装</th>
+            <th>状态</th>
+            <th style="text-align:right;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ib in inbounds %}
+          <tr>
+            <td>
+              {% if ib.protocol == "hysteria2" %}
+              <span class="badge badge-hy2">Hysteria 2</span>
+              {% else if ib.protocol == "mieru" %}
+              <span class="badge badge-mieru">Mieru</span>
+              {% else %}
+              <span class="badge badge-vless">VLESS</span>
+              {% endif %}
+            </td>
+            <td><code>{% if !ib.port_range.is_empty() %}{{ ib.port_range }}{% else %}{{ ib.listen_port }}{% endif %}</code></td>
+            <td><code>{% if ib.sni.is_empty() %}-{% else %}{{ ib.sni }}{% endif %}</code></td>
+            <td style="font-size: 12px; opacity: .85;">
+              {% if ib.protocol == "hysteria2" %}
+              QUIC · 证书: {{ ib.cert_mode }} · 伪装: {{ ib.masquerade_url }}
+              {% else if ib.protocol == "mieru" %}
+              Mieru · {{ ib.transport_protocol }} · 动态混淆加盐 (免证书)
+              {% else %}
+              REALITY ({{ ib.dest }}) · <code>{{ ib.xhttp_path }}</code>
+              {% endif %}
+            </td>
+            <td>
+              <span class="status {% if ib.is_active %}status-active{% else %}status-disabled{% endif %}">
+                {% if ib.is_active %}启用{% else %}已禁用{% endif %}
+              </span>
+            </td>
+            <td style="text-align:right;">
+              <div class="actions" style="justify-content: flex-end;">
+                <form method="post" action="/admin/inbound/{{ ib.id }}/toggle" style="display:inline;">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <button type="submit" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;">{% if ib.is_active %}禁用{% else %}启用{% endif %}</button>
+                </form>
+                <a href="/admin/inbound/{{ ib.id }}/edit" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;">编辑</a>
+                <form method="post" action="/admin/inbound/{{ ib.id }}/delete" style="display:inline;" onsubmit="return confirm('确认删除端口 {{ ib.listen_port }} 的入站吗？删除后该端口将停止服务。');">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <button type="submit" class="btn btn-danger" style="padding: 4px 10px; font-size: 12px;">删除</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </section>
+  </main>
+  </div>
+</body>
+</html>

@@ -43,6 +43,13 @@ tonic = "0.12"
 prost = "0.13"
 qrcode = { version = "0.14", features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+instant-acme = "0.7"
+rcgen = "0.13"
+x509-parser = "0.16"
+pingora-core = { version = "0.9", features = ["openssl"] }
+pingora-proxy = { version = "0.9", features = ["openssl"] }
+pingora-http = "0.9"
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
@@ -56,3 +63,10 @@ http-body-util = "0.1"
 [build-dependencies]
 tonic-build = { version = "0.12", features = ["prost"] }
 protoc-bin-vendored = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

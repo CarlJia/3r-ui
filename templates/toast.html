@@ -1,0 +1,177 @@
+<style>
+  /* Toast Notification Component */
+  #toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+    max-width: 380px;
+    width: calc(100vw - 40px);
+  }
+  .toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.4;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    background: #ffffff;
+    color: #1c2024;
+    border-left: 4px solid #3b82f6;
+    animation: toast-in 0.25s ease-out forwards;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  .toast.toast-success {
+    border-left-color: #10b981;
+  }
+  .toast.toast-error {
+    border-left-color: #ef4444;
+  }
+  .toast.toast-info {
+    border-left-color: #3b82f6;
+  }
+  .toast.toast-warning {
+    border-left-color: #f59e0b;
+  }
+  .toast-icon {
+    font-size: 16px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .toast-success .toast-icon { color: #10b981; }
+  .toast-error .toast-icon { color: #ef4444; }
+  .toast-info .toast-icon { color: #3b82f6; }
+  .toast-warning .toast-icon { color: #f59e0b; }
+  .toast-message {
+    flex-grow: 1;
+    word-break: break-word;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .toast.toast-out {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  @media (prefers-color-scheme: dark) {
+    .toast {
+      background: #1e2126;
+      color: #e6e8eb;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    }
+  }
+</style>
+
+<div id="toast-container" aria-live="polite"></div>
+
+<script>
+  window.showToast = function (message, type, duration) {
+    if (!message) return;
+    type = type || 'info';
+    duration = duration !== undefined ? duration : 3000;
+
+    var container = document.getElementById('toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toast-container';
+      document.body.appendChild(container);
+    }
+
+    var toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+
+    var iconChar = 'ℹ';
+    if (type === 'success') iconChar = '✓';
+    else if (type === 'error') iconChar = '✕';
+    else if (type === 'warning') iconChar = '⚠';
+
+    var iconSpan = document.createElement('span');
+    iconSpan.className = 'toast-icon';
+    iconSpan.textContent = iconChar;
+
+    var textSpan = document.createElement('span');
+    textSpan.className = 'toast-message';
+    textSpan.textContent = message;
+
+    toast.appendChild(iconSpan);
+    toast.appendChild(textSpan);
+    container.appendChild(toast);
+
+    var timer = setTimeout(function () {
+      dismiss();
+    }, duration);
+
+    function dismiss() {
+      clearTimeout(timer);
+      toast.classList.add('toast-out');
+      setTimeout(function () {
+        if (toast.parentNode) {
+          toast.parentNode.removeChild(toast);
+        }
+      }, 250);
+    }
+
+    toast.addEventListener('click', dismiss);
+  };
+
+  // 页面加载时自动检查是否有待展示的 Toast (例如重定向后通过 sessionStorage 传递)
+  document.addEventListener('DOMContentLoaded', function () {
+    try {
+      var pendingToast = sessionStorage.getItem('3r_ui_toast');
+      if (pendingToast) {
+        sessionStorage.removeItem('3r_ui_toast');
+        var data = JSON.parse(pendingToast);
+        if (data && data.message) {
+          window.showToast(data.message, data.type || 'success', data.duration || 3000);
+        }
+      }
+    } catch (e) {}
+
+    // 为所有提交表单增加提交反馈 Toast（当不是新页面跳转或在提交瞬间给出反馈）
+    document.querySelectorAll('form').forEach(function (form) {
+      form.addEventListener('submit', function (e) {
+        var submitBtn = form.querySelector('button[type="submit"]');
+        var btnText = submitBtn ? submitBtn.textContent.trim() : '';
+        var action = form.getAttribute('action') || '';
+
+        // 根据操作类型设置页面刷新后需要展示的成功提示
+        var msg = '操作已提交';
+        var type = 'success';
+        if (action.indexOf('/admin/logout') !== -1) {
+          msg = '已退出登录';
+        } else if (action.indexOf('/admin/inbound/delete') !== -1) {
+          msg = '入站已成功删除';
+        } else if (action.indexOf('/admin/inbound') !== -1) {
+          msg = '入站配置已保存并重载';
+        } else if (action.indexOf('/admin/settings/proxy/request-cert') !== -1) {
+          msg = '已提交证书申请，后台正在验证 DNS-01…';
+          type = 'info';
+        } else if (action.indexOf('/admin/settings/proxy') !== -1) {
+          msg = '反向代理配置已保存并生效';
+        } else if (action.indexOf('/admin/settings/xray/update') !== -1) {
+          msg = '已触发 Xray 核心更新任务';
+          type = 'info';
+        } else if (action.indexOf('/delete') !== -1) {
+          msg = '删除成功';
+        } else if (btnText.indexOf('保存') !== -1) {
+          msg = '保存成功并重载';
+        } else if (btnText.indexOf('添加') !== -1 || btnText.indexOf('创建') !== -1) {
+          msg = '用户创建成功';
+        }
+
+        try {
+          sessionStorage.setItem('3r_ui_toast', JSON.stringify({ message: msg, type: type }));
+        } catch (err) {}
+      });
+    });
+  });
+</script>

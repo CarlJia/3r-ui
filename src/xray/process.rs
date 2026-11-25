@@ -332,6 +332,9 @@ impl XraySupervisor {
             // 的 `TZ` 强制锁定为 UTC，否则 `parse_xray_timestamp` 会把
             // 接入主机时区偏移塞进 `logged_at`。
             .env("TZ", "UTC")
+            // 内存调优：限制 Go 运行时内存上限并强制积极归还闲置堆内存给操作系统内核 (MADV_DONTNEED)
+            .env("GOMEMLIMIT", "128MiB")
+            .env("GODEBUG", "madvdontneed=1")
             // 两条流都要接管：xray 的 access/error 日志按配置写 **stdout**
             // （见 `xray::config` 的 `log` 段），而 Go 运行时的 panic 与
             // `log.Fatal` 走 **stderr**。只接管其中一条都会丢诊断信息。

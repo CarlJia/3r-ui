@@ -338,7 +338,9 @@ fn full_admin_flow_completes() {
         "POST",
         "/admin/inbound",
         Some(&form_with_csrf(
-            "listen_port=2053&dest=www.apple.com&sni=www.apple.com&short_id=abcd",
+            // `1.1.1.1` rather than a hostname so the dest validator does not
+            // need DNS; short_id >= 8 hex chars per SHORT_ID_MIN_LEN.
+            "listen_port=2053&dest=1.1.1.1&sni=example.com&short_id=abcd1234",
         )),
         &cookies,
     )
