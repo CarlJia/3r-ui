@@ -42,7 +42,7 @@ jobs:
         run: cargo test
 
   build-check-cross:
-    name: Build check (x86_64 & aarch64 musl)
+    name: Build check (${{ matrix.target }})
     runs-on: ubuntu-22.04
     strategy:
       matrix:
@@ -55,13 +55,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add Rust target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Install cross-compilation packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+      - name: Install cross
+        uses: taiki-e/install-action@cross
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -72,5 +67,5 @@ jobs:
           key: cargo-cross-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-cross-${{ matrix.target }}-
 
-      - name: Cargo check for target
-        run: cargo check --target ${{ matrix.target }}
+      - name: Cross check for target
+        run: cross check --target ${{ matrix.target }}

@@ -56,13 +56,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add Rust target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Install cross-compilation dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+      - name: Install cross
+        uses: taiki-e/install-action@cross
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -73,17 +68,13 @@ jobs:
           key: cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-${{ matrix.target }}-
 
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Strip debug symbols
-        run: |
-          strip target/${{ matrix.target }}/release/3r-ui 2>/dev/null || \
-          aarch64-linux-gnu-strip target/${{ matrix.target }}/release/3r-ui 2>/dev/null || true
+      - name: Build release binary with cross
+        run: cross build --release --target ${{ matrix.target }}
 
       - name: Prepare asset
         run: |
           cp target/${{ matrix.target }}/release/3r-ui ${{ matrix.asset_name }}
+          strip ${{ matrix.asset_name }} 2>/dev/null || true
           tar -czvf ${{ matrix.asset_name }}.tar.gz ${{ matrix.asset_name }}
           sha256sum ${{ matrix.asset_name }} > ${{ matrix.asset_name }}.sha256
           sha256sum ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
@@ -133,6 +124,7 @@ jobs:
       - name: Prepare asset
         run: |
           cp target/release/3r-ui 3r-ui-aarch64-apple-darwin
+          strip 3r-ui-aarch64-apple-darwin 2>/dev/null || true
           tar -czvf 3r-ui-aarch64-apple-darwin.tar.gz 3r-ui-aarch64-apple-darwin
           shasum -a 256 3r-ui-aarch64-apple-darwin > 3r-ui-aarch64-apple-darwin.sha256
           shasum -a 256 3r-ui-aarch64-apple-darwin.tar.gz > 3r-ui-aarch64-apple-darwin.tar.gz.sha256
