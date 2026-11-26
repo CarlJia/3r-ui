@@ -42,7 +42,7 @@ pub async fn handle_subscription(
 
     // Query all active inbounds mapped to this client
     let mut inbounds = match sqlx::query_as::<_, Inbound>(
-        "SELECT i.id, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
+        "SELECT i.id, i.listen_ip, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
                 i.short_id, i.xhttp_path, i.protocol, i.cert_mode, i.custom_cert_path, i.custom_key_path, \
                 i.masquerade_url, i.port_range, i.transport_protocol, i.skip_cert_verify, i.udp, i.status, i.created_at, i.updated_at \
          FROM inbounds i \
@@ -64,7 +64,7 @@ pub async fn handle_subscription(
     // Fallback for legacy single inbound mapping if client_inbounds was empty
     if inbounds.is_empty() && client.inbound_id > 0 {
         if let Ok(Some(single)) = sqlx::query_as::<_, Inbound>(
-            "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, \
+            "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, \
                     short_id, xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, \
                     masquerade_url, port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
              FROM inbounds WHERE id = ? AND status = 'active'",
@@ -113,10 +113,12 @@ pub async fn handle_subscription(
         };
         client_clone.name = Some(format!("{base_name} - {proto_label}"));
 
+        let node_host = crate::share::resolve_inbound_host(inbound, &host);
+
         let uri = match inbound.protocol.as_str() {
-            "hysteria2" => crate::share::hy2::build_uri(&client_clone, inbound, &host),
-            "mieru" => crate::share::mieru::build_uri(&client_clone, inbound, &host),
-            _ => crate::share::vless::build_uri(&client_clone, inbound, &host),
+            "hysteria2" => crate::share::hy2::build_uri(&client_clone, inbound, &node_host),
+            "mieru" => crate::share::mieru::build_uri(&client_clone, inbound, &node_host),
+            _ => crate::share::vless::build_uri(&client_clone, inbound, &node_host),
         };
         uris.push(uri);
     }

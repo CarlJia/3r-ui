@@ -26,6 +26,8 @@ pub struct MieruUser {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MieruServerConfig {
+    #[serde(rename = "listenIPAddress", skip_serializing_if = "String::is_empty")]
+    pub listen_ip_address: String,
     pub port_bindings: Vec<PortBinding>,
     pub users: Vec<MieruUser>,
     pub logging_level: String,
@@ -35,6 +37,7 @@ pub struct MieruServerConfig {
 impl MieruServerConfig {
     pub fn new() -> Self {
         Self {
+            listen_ip_address: String::new(),
             port_bindings: Vec::new(),
             users: Vec::new(),
             logging_level: "INFO".to_string(),
@@ -49,10 +52,40 @@ impl Default for MieruServerConfig {
     }
 }
 
+/// Pick the address the daemon should bind to.
+///
+/// The daemon only binds one address, so the first inbound that asks for a
+/// specific one wins. An address this host does not own is skipped: binding it
+/// would abort the daemon with `cannot assign requested address` and take
+/// every Mieru inbound down. An empty result means "listen on all interfaces".
+pub fn pick_listen_ip(inbounds: &[Inbound]) -> String {
+    for ib in inbounds {
+        let ip = ib.listen_ip.trim();
+        if ip.is_empty() || ip == "0.0.0.0" || ip == "::" {
+            continue;
+        }
+        if local_host_owns(ip) {
+            return ip.to_string();
+        }
+        tracing::warn!(
+            ip = %ip,
+            "mieru inbound listens on an address this host does not own; ignoring it"
+        );
+    }
+    String::new()
+}
+
+/// Whether one of this host's interfaces carries `ip`.
+fn local_host_owns(ip: &str) -> bool {
+    crate::net::get_local_interfaces()
+        .iter()
+        .any(|iface| iface.ip == ip)
+}
+
 /// Query active Mieru inbounds and mapped active clients to generate the Mieru server config.
 pub async fn generate_config(pool: &SqlitePool) -> AppResult<Option<MieruServerConfig>> {
     let inbounds: Vec<Inbound> = sqlx::query_as(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE protocol = 'mieru' AND status = 'active' ORDER BY id ASC",
@@ -66,6 +99,8 @@ pub async fn generate_config(pool: &SqlitePool) -> AppResult<Option<MieruServerC
     }
 
     let mut config = MieruServerConfig::new();
+
+    config.listen_ip_address = pick_listen_ip(&inbounds);
 
     // 1. Port bindings
     for ib in &inbounds {
@@ -191,6 +226,7 @@ mod tests {
     #[test]
     fn test_mieru_config_serialization() {
         let mut config = MieruServerConfig::new();
+        config.listen_ip_address = "203.0.113.2".to_string();
         config.port_bindings.push(PortBinding {
             port: Some(2027),
             port_range: None,
@@ -207,8 +243,63 @@ mod tests {
         });
 
         let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"listenIPAddress\":\"203.0.113.2\""));
         assert!(json.contains("\"port\":2027"));
         assert!(json.contains("\"portRange\":\"2012-2022\""));
         assert!(json.contains("\"name\":\"testuser\""));
+
+        let config_empty_ip = MieruServerConfig::new();
+        let json_empty = serde_json::to_string(&config_empty_ip).unwrap();
+        assert!(!json_empty.contains("listenIPAddress"));
+    }
+
+    fn sample_inbound(listen_ip: &str) -> Inbound {
+        Inbound {
+            id: 1,
+            listen_ip: listen_ip.to_string(),
+            listen_port: 8588,
+            dest: String::new(),
+            sni: String::new(),
+            server_name: None,
+            private_key: String::new(),
+            public_key: String::new(),
+            short_id: String::new(),
+            xhttp_path: None,
+            protocol: "mieru".to_string(),
+            cert_mode: "auto".to_string(),
+            custom_cert_path: String::new(),
+            custom_key_path: String::new(),
+            masquerade_url: String::new(),
+            port_range: String::new(),
+            transport_protocol: "TCP".to_string(),
+            skip_cert_verify: 0,
+            udp: 0,
+            status: "active".to_string(),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_pick_listen_ip_skips_addresses_this_host_does_not_own() {
+        // An address belonging to another machine would abort the daemon with
+        // "cannot assign requested address", so it must be ignored.
+        let inbounds = vec![sample_inbound("120.253.251.134")];
+        assert_eq!(pick_listen_ip(&inbounds), "");
+
+        let wildcards = vec![sample_inbound("0.0.0.0"), sample_inbound("::")];
+        assert_eq!(pick_listen_ip(&wildcards), "");
+    }
+
+    #[test]
+    fn test_pick_listen_ip_keeps_a_local_address() {
+        let Some(local) = crate::net::get_local_interfaces()
+            .first()
+            .map(|i| i.ip.clone())
+        else {
+            return; // No non-loopback interface on this machine; nothing to assert.
+        };
+        let inbounds = vec![sample_inbound("120.253.251.134"), sample_inbound(&local)];
+        assert_eq!(pick_listen_ip(&inbounds), local);
     }
 }

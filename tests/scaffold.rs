@@ -51,7 +51,7 @@ async fn migrations_create_partial_unique_index() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     let idx_sql: String = sqlx::query_scalar(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_inbounds_port_active'",
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_inbounds_ip_port_active'",
     )
     .fetch_one(&pool)
     .await
@@ -61,6 +61,29 @@ async fn migrations_create_partial_unique_index() {
         idx_sql.contains("WHERE status = 'active'"),
         "partial index not enforced: {idx_sql}"
     );
+
+    // Verify multiple active inbounds can share identical listen_port on distinct listen_ip
+    sqlx::query(
+        "INSERT INTO inbounds (listen_ip, listen_port, dest, sni, private_key, public_key, short_id) \
+         VALUES ('198.51.100.1', 443, 'example.com', 'example.com', 'k1', 'k2', 'sid1')"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO inbounds (listen_ip, listen_port, dest, sni, private_key, public_key, short_id) \
+         VALUES ('203.0.113.2', 443, 'example.com', 'example.com', 'k3', 'k4', 'sid2')"
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inbounds WHERE listen_port = 443")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
 }
 
 #[tokio::test]

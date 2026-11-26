@@ -180,3 +180,74 @@ async fn sub_endpoint_returns_404_for_unknown_token() {
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn sub_endpoint_decouples_cdn_domain_and_uses_inbound_listen_ip_and_server_name() {
+    let h = boot().await;
+
+    // Inbound 1: VLESS on specific IP (203.0.113.10) without server_name -> should connect to 203.0.113.10
+    // Inbound 2: Mieru on IP (203.0.113.20) with custom direct server_name (direct2.example.com) -> should connect to direct2.example.com
+    sqlx::query(
+        "INSERT INTO inbounds (id, listen_ip, listen_port, dest, sni, server_name, private_key, \
+                public_key, short_id, xhttp_path, protocol, cert_mode, status, created_at, updated_at) \
+         VALUES (1, '203.0.113.10', 443, 'www.apple.com', 'www.apple.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
+                '/r/vlesspath', 'vless', 'reality', 'active', unixepoch(), unixepoch()), \
+                (2, '203.0.113.20', 8443, '', '', 'direct2.example.com', '', '', '', \
+                NULL, 'mieru', 'auto', 'active', unixepoch(), unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let sub_token = "multi_nic_sub_token";
+    sqlx::query(
+        "INSERT INTO clients (id, inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, created_at) \
+         VALUES (1, 1, '11111111-2222-3333-4444-555555555555', 'nicuser', 10737418240, NULL, 'active', ?, unixepoch())",
+    )
+    .bind(sub_token)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    // Map client to both inbounds
+    sqlx::query("INSERT INTO client_inbounds (client_id, inbound_id) VALUES (1, 1), (1, 2)")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+
+    // Send public unauthenticated request
+    let req = Request::builder()
+        .uri(format!("/sub/{sub_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_text(resp).await;
+    let decoded = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(body.trim())
+            .unwrap(),
+    )
+    .unwrap();
+
+    // Inbound 1 should use listen_ip 203.0.113.10 instead of public_host sub.example.com
+    assert!(
+        decoded.contains("vless://11111111-2222-3333-4444-555555555555@203.0.113.10:443?"),
+        "Decoded subscription links should contain node connecting to 203.0.113.10: {}",
+        decoded
+    );
+
+    // Inbound 2 should use server_name direct2.example.com
+    assert!(
+        decoded.contains("mieru"),
+        "Decoded subscription links should contain mieru: {}",
+        decoded
+    );
+    assert!(
+        decoded.contains("@direct2.example.com"),
+        "Mieru link should connect to direct2.example.com: {}",
+        decoded
+    );
+}

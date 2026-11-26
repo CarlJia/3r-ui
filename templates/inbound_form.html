@@ -89,6 +89,8 @@
         <dt>监听端口</dt><dd>{{ ib.listen_port }}</dd>
         <dt>入站协议</dt><dd>{% if ib.protocol == "hysteria2" %}Hysteria 2 (QUIC + TLS){% else if ib.protocol == "mieru" %}Mieru (抗探测 + 免证书){% else %}VLESS-REALITY-XHTTP{% endif %}</dd>
         {% if ib.protocol == "hysteria2" %}
+        <dt>监听 IP</dt><dd>{% if ib.listen_ip.is_empty() %}0.0.0.0 (全部网卡){% else %}{{ ib.listen_ip }}{% endif %}</dd>
+        {% if !ib.server_name.is_empty() %}<dt>连接域名</dt><dd>{{ ib.server_name }}</dd>{% endif %}
         <dt>SNI</dt><dd>{{ ib.sni }}</dd>
         <dt>证书模式</dt><dd>{{ ib.cert_mode }}</dd>
         <dt>跳过证书校验</dt><dd>{% if ib.skip_cert_verify %}已开启 (下发 insecure=1){% else %}已关闭 (严格校验){% endif %}</dd>
@@ -98,9 +100,13 @@
         <dt>自定义证书</dt><dd>{{ ib.custom_cert_path }}</dd>
         {% endif %}
         {% else if ib.protocol == "mieru" %}
+        <dt>监听 IP</dt><dd>{% if ib.listen_ip.is_empty() %}0.0.0.0 (全部网卡){% else %}{{ ib.listen_ip }}{% endif %}</dd>
+        {% if !ib.server_name.is_empty() %}<dt>连接域名/IP</dt><dd>{{ ib.server_name }}</dd>{% endif %}
         <dt>端口/端口段</dt><dd>{% if !ib.port_range.is_empty() %}{{ ib.port_range }}{% else %}{{ ib.listen_port }}{% endif %}</dd>
         <dt>传输协议</dt><dd>{{ ib.transport_protocol }}</dd>
         {% else %}
+        <dt>监听 IP</dt><dd>{% if ib.listen_ip.is_empty() %}0.0.0.0 (全部网卡){% else %}{{ ib.listen_ip }}{% endif %}</dd>
+        {% if !ib.server_name.is_empty() %}<dt>连接域名</dt><dd>{{ ib.server_name }}</dd>{% endif %}
         <dt>REALITY dest</dt><dd>{{ ib.dest }}</dd>
         <dt>SNI</dt><dd>{{ ib.sni }}</dd>
         <dt>shortId</dt><dd><code>{{ ib.short_id }}</code></dd>
@@ -136,10 +142,24 @@
           <option value="mieru" {% match inbound %}{% when Some with (i) %}{% if i.protocol == "mieru" %}selected{% endif %}{% when None %}{% endmatch %}>Mieru (高抗探测 + 免证书)</option>
         </select>
 
+        <label for="listen_ip">监听网卡 / IP</label>
+        <input id="listen_ip" name="listen_ip" list="network-interfaces" placeholder="0.0.0.0 (默认监听全部网卡)"
+               value="{% match inbound %}{% when Some with (i) %}{{ i.listen_ip }}{% when None %}0.0.0.0{% endmatch %}">
+        <datalist id="network-interfaces">
+          <option value="0.0.0.0">0.0.0.0 (全部 IPv4 网卡)</option>
+          <option value="::">:: (全部 IPv6 网卡)</option>
+        </datalist>
+        <p class="hint">多网卡 VPS 场景下可指定特定网卡公网 IP。支持选择自动探测到的本机网卡 IP。</p>
+
         <label for="listen_port">监听端口</label>
         <input id="listen_port" name="listen_port" type="number" min="1" max="65535"
                value="{% match inbound %}{% when Some with (i) %}{{ i.listen_port }}{% when None %}443{% endmatch %}"
                required>
+
+        <label for="server_name">节点连接地址 / 域名 (server_name / 直连 Host)</label>
+        <input id="server_name" name="server_name" placeholder="留空则自动按监听网卡 IP 直连"
+               value="{% match inbound %}{% when Some with (i) %}{{ i.server_name }}{% when None %}{% endmatch %}">
+        <p class="hint">下发给客户端与订阅的连接地址。当开启全局 CDN 反代域名时，留空将自动使用上方网卡 IP 直连；若该网卡绑定了独立直连域名/DDNS，可在此填入。</p>
 
         <div id="sni-group">
           <label for="sni">SNI（serverName / TLS 域名）</label>
@@ -426,6 +446,28 @@
         input.select();
         if (window.showToast) window.showToast('已优选伪装网址: ' + pick, 'info', 2000);
       });
+    })();
+
+    (function () {
+      const datalist = document.getElementById('network-interfaces');
+      if (!datalist) return;
+      fetch('{{ base_path }}/admin/api/network-interfaces')
+        .then(r => r.json())
+        .then(data => {
+          if (data && Array.isArray(data.interfaces)) {
+            data.interfaces.forEach(iface => {
+              if (Array.isArray(iface.ips)) {
+                iface.ips.forEach(ip => {
+                  const opt = document.createElement('option');
+                  opt.value = ip;
+                  opt.textContent = `${ip} (${iface.name})`;
+                  datalist.appendChild(opt);
+                });
+              }
+            });
+          }
+        })
+        .catch(e => console.error('Failed to load network interfaces:', e));
     })();
   </script>
 </body>

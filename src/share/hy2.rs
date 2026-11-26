@@ -68,6 +68,7 @@ mod tests {
     fn inbound() -> Inbound {
         Inbound {
             id: 2,
+            listen_ip: "0.0.0.0".into(),
             listen_port: 8443,
             dest: "".into(),
             sni: "hy2.example.com".into(),

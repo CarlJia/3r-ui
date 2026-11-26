@@ -646,6 +646,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let inbound = crate::db::models::Inbound {
             id: 1,
+            listen_ip: "0.0.0.0".into(),
             listen_port: 8443,
             dest: "example.com".into(),
             sni: "hy2.example.com".into(),

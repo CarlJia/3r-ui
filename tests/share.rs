@@ -392,6 +392,7 @@ async fn hy2_share_uri_generation() {
     };
     let inbound = three_r_ui::db::models::Inbound {
         id: 1,
+        listen_ip: "0.0.0.0".into(),
         listen_port: 8443,
         dest: "".into(),
         sni: "hy2.example.com".into(),

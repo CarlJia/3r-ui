@@ -96,37 +96,98 @@ impl MieruSupervisor {
         let _ = std::fs::remove_file(&self.pid_file);
     }
 
-    /// Apply configuration to Mieru / Mita CLI before starting daemon.
-    pub async fn apply_config(&self) -> AppResult<()> {
+    /// Push the current configuration into the running daemon.
+    ///
+    /// `mita replace config <file>` talks to the daemon over its unix domain
+    /// socket, so it only works while the daemon is up. The old implementation
+    /// called `mita apply config` *before* starting the daemon and waited for
+    /// the command to exit — with no daemon running that call blocks forever
+    /// (and the legacy stub never exits at all), which wedged the supervisor
+    /// before `mita run` was ever reached.
+    ///
+    /// Returns `false` when the daemon is unreachable or the call fails, so the
+    /// caller can fall back to restarting the process.
+    async fn replace_config(&self) -> bool {
         if !self.config_path.exists() {
-            return Ok(());
+            return false;
         }
-
         let mut cmd = Command::new(&self.mieru_bin);
-        cmd.arg("apply")
+        cmd.arg("replace")
             .arg("config")
             .arg(&self.config_path)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
 
-        let _ = cmd.status().await;
-        Ok(())
+        match tokio::time::timeout(Duration::from_secs(15), cmd.status()).await {
+            Ok(Ok(status)) if status.success() => {
+                tracing::info!("mieru configuration replaced via RPC");
+                true
+            }
+            Ok(Ok(status)) => {
+                tracing::warn!(code = status.code(), "mieru replace config failed");
+                false
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "mieru replace config could not be executed");
+                false
+            }
+            Err(_) => {
+                tracing::warn!("mieru replace config timed out");
+                false
+            }
+        }
+    }
+
+    /// Build the command that starts the daemon in the foreground.
+    ///
+    /// `mita run` loads its configuration **only** from the
+    /// `MITA_CONFIG_JSON_FILE` environment variable — without it the daemon
+    /// comes up with an empty configuration and binds no port, which looks
+    /// exactly like a network problem to the client.
+    fn daemon_command(&self) -> Command {
+        let mut cmd = Command::new(&self.mieru_bin);
+        cmd.arg("run")
+            .env("MITA_CONFIG_JSON_FILE", &self.config_path)
+            .kill_on_drop(true);
+        cmd
     }
 
     /// Spawn the Mieru server daemon loop.
     pub async fn spawn(&self) -> AppResult<()> {
-        self.apply_config().await?;
+        // The daemon needs its socket directory and system account; without
+        // them it exits immediately with an opaque bind/permission error.
+        crate::mieru::installer::ensure_runtime_env()?;
 
         // If config doesn't exist, don't spawn
         if !self.config_path.exists() {
             return Ok(());
         }
+        if !self.mieru_bin.is_file() {
+            tracing::warn!(
+                path = %self.mieru_bin.display(),
+                "mieru server binary missing; mieru inbounds will not listen"
+            );
+            return Ok(());
+        }
 
-        let mut cmd = Command::new(&self.mieru_bin);
-        cmd.arg("run")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
+        let mut cmd = self.daemon_command();
+
+        // Keep the daemon's own diagnostics: it explains bind failures, config
+        // problems and unsupported fields far better than a silent exit.
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_file)
+        {
+            cmd.stdout(std::process::Stdio::from(
+                file.try_clone().map_err(AppError::Io)?,
+            ));
+            cmd.stderr(std::process::Stdio::from(file));
+        } else {
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::null());
+        }
 
         let child = cmd.spawn().map_err(AppError::Io)?;
         if let Some(pid) = child.id() {
@@ -154,26 +215,14 @@ impl MieruSupervisor {
             return Ok(());
         }
 
-        // Try applying config dynamically first
-        let _ = self.apply_config().await;
-
-        // Check if alive, else spawn
-        let mut needs_spawn = false;
-        {
-            let mut guard = self.current_child.lock().await;
-            if let Some(ref mut child) = *guard {
-                if let Ok(Some(_)) = child.try_wait() {
-                    needs_spawn = true;
-                }
-            } else {
-                needs_spawn = true;
-            }
+        // Preferred path: hand the new configuration to the running daemon.
+        if self.replace_config().await {
+            return Ok(());
         }
 
-        if needs_spawn {
-            self.stop().await;
-            self.spawn().await?;
-        }
+        // Fallback: the daemon is down or refused the update, so restart it.
+        self.stop().await;
+        self.spawn().await?;
 
         Ok(())
     }
@@ -181,7 +230,9 @@ impl MieruSupervisor {
     /// Actor runner handling supervisor commands.
     pub async fn run(self: Arc<Self>, mut rx: mpsc::Receiver<MieruCommand>) {
         self.reap_stale().await;
-        let _ = self.spawn().await;
+        if let Err(e) = self.spawn().await {
+            tracing::error!(error = %e, "failed to start the mieru server");
+        }
 
         while let Some(cmd) = rx.recv().await {
             match cmd {
@@ -199,5 +250,49 @@ impl MieruSupervisor {
         }
 
         self.stop().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_supervisor(dir: &Path) -> MieruSupervisor {
+        let bin = dir.join("mita");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        let config = dir.join("config.json");
+        std::fs::write(&config, "{}").unwrap();
+        MieruSupervisor::new(bin, config, dir)
+    }
+
+    #[test]
+    fn test_daemon_command_points_at_the_config_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let sup = sample_supervisor(temp.path());
+        let cmd = sup.daemon_command();
+        let std_cmd = cmd.as_std();
+
+        let envs: Vec<(String, Option<String>)> = std_cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+
+        let config_path = sup.config_path.to_string_lossy().into_owned();
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "MITA_CONFIG_JSON_FILE" && v.as_deref() == Some(&config_path)),
+            "the daemon must be told which configuration file to load: {envs:?}"
+        );
+
+        let args: Vec<String> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["run".to_string()]);
     }
 }
