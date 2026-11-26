@@ -15,6 +15,9 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_DEV_STRIP: "debuginfo"
+  CARGO_PROFILE_TEST_STRIP: "debuginfo"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
 
 jobs:
   lint:
@@ -60,6 +63,12 @@ jobs:
         env:
           RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         run: cargo test
+
+      - name: Prune test binaries to minimize cache size
+        if: always()
+        run: |
+          find target/debug/deps -maxdepth 1 -type f -executable -delete 2>/dev/null || true
+          rm -rf target/debug/incremental 2>/dev/null || true
 
   build-check-cross:
     name: Build check (${{ matrix.target }})

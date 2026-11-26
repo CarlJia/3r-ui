@@ -65,6 +65,14 @@ http-body-util = "0.1"
 tonic-build = { version = "0.12", features = ["prost"] }
 protoc-bin-vendored = "3"
 
+[profile.dev]
+debug = 0
+strip = "debuginfo"
+
+[profile.test]
+debug = 0
+strip = "debuginfo"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

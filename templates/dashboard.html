@@ -195,15 +195,28 @@
           <div class="meter-bar">
             <div id="bar-mem" class="meter-fill {% if system.mem_percent > 85.0 %}danger{% else if system.mem_percent > 70.0 %}warn{% endif %}" style="width: {{ system.mem_percent }}%;"></div>
           </div>
-          <div class="stat-sub" style="margin-top:6px; padding-top:6px; border-top:1px dashed rgba(0,0,0,0.08); font-size:11px; display:flex; flex-direction:column; gap:2px;">
-            <div style="display:flex; justify-content:space-between;">
+          <div class="stat-sub" style="margin-top:6px; padding-top:6px; border-top:1px dashed rgba(0,0,0,0.08); font-size:11px; display:flex; flex-direction:column; gap:3px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
               <span>程序进程合计内存：</span>
               <strong id="metric-app-total-mem" style="color:#3b82f6;">{{ system.app_total_mem_formatted }}</strong>
             </div>
-            <div style="font-size:10px; opacity:0.6; display:flex; justify-content:space-between; gap:6px;">
-              <span>面板: <span id="metric-panel-mem">{{ system.app_panel_mem_formatted }}</span></span>
-              <span>Xray: <span id="metric-xray-mem">{{ system.app_xray_mem_formatted }}</span></span>
-              <span>Mieru: <span id="metric-mieru-mem">{{ system.app_mieru_mem_formatted }}</span></span>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; font-size:10px; opacity:0.75; margin-top:2px;">
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>面板:</span>
+                <span id="metric-panel-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_panel_mem_formatted }}</span>
+              </div>
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>Xray:</span>
+                <span id="metric-xray-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_xray_mem_formatted }}</span>
+              </div>
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>Hy2:</span>
+                <span id="metric-hy2-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_hy2_mem_formatted }}</span>
+              </div>
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>Mieru:</span>
+                <span id="metric-mieru-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_mieru_mem_formatted }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -376,6 +389,7 @@
           setText('metric-app-total-mem', data.app_total_mem_formatted);
           setText('metric-panel-mem', data.app_panel_mem_formatted);
           setText('metric-xray-mem', data.app_xray_mem_formatted);
+          setText('metric-hy2-mem', data.app_hy2_mem_formatted);
           setText('metric-mieru-mem', data.app_mieru_mem_formatted);
           updateMeterBar('bar-mem', data.mem_percent);
 
