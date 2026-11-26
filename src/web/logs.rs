@@ -13,7 +13,7 @@ use axum_extra::extract::cookie::CookieJar;
 use sqlx::SqlitePool;
 
 use crate::db::models::ConnectionLog;
-use crate::web::middleware::{render_page, url_encode, CurrentAdmin};
+use crate::web::middleware::{render_page, url_encode, BasePath, CurrentAdmin};
 use crate::web::AppState;
 
 /// 每页条数。LIMIT 多取一行判断 has_next。
@@ -37,6 +37,7 @@ pub struct LogsFilters {
 #[derive(Debug, Clone)]
 pub struct LogRowView {
     pub logged_at_iso: String,
+    pub uuid: String,
     /// 前 8 字符预览（多字节安全：不足或含多字节字符时退回完整值）。
     pub uuid_preview: String,
     pub src_addr: Option<String>,
@@ -57,6 +58,7 @@ struct LogsListTemplate {
     has_next: bool,
     has_prev: bool,
     filters: LogsFilters,
+    base_path: String,
 }
 
 /// `GET /admin/logs` — 连接日志列表，默认按 `logged_at DESC` 分页展示
@@ -64,9 +66,11 @@ struct LogsListTemplate {
 pub async fn list(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let filters = parse_filters(&params);
 
     let rows = match fetch_logs(&state.pool, &filters).await {
@@ -89,9 +93,11 @@ pub async fn list(
         .map(|row| {
             // 先算 preview 再 move raw_message，省一次 String clone。
             let detail_preview = truncate_preview(&row.raw_message, 60);
+            let uuid_preview = row.uuid.get(..8).unwrap_or(&row.uuid).to_string();
             LogRowView {
                 logged_at_iso: timestamp_to_iso(row.logged_at),
-                uuid_preview: row.uuid.get(..8).unwrap_or(&row.uuid).to_string(),
+                uuid: row.uuid,
+                uuid_preview,
                 src_addr: row.src_addr,
                 dest: row.dest,
                 status: row.status,
@@ -108,6 +114,7 @@ pub async fn list(
         has_next,
         has_prev: filters.page > 1,
         filters,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -292,13 +299,16 @@ struct XrayLogsTemplate {
     log_path: String,
     initial_logs: String,
     line_count: usize,
+    base_path: String,
 }
 
 pub async fn xray_logs_page(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let log_path = state.config.data_dir.join("xray.log");
     let (lines, count) = read_tail_lines(&log_path, 300).await;
     let initial_logs = lines.join("\n");
@@ -306,6 +316,7 @@ pub async fn xray_logs_page(
         log_path: log_path.display().to_string(),
         initial_logs,
         line_count: count,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template render error: {e}"));

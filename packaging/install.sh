@@ -101,8 +101,8 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 MISSING_PKGS=()
-for pkg in curl tar ca-certificates; do
-    if ! command -v "$pkg" >/dev/null 2>&1; then
+for pkg in curl tar ca-certificates fail2ban python3-systemd rsyslog iptables; do
+    if ! command -v "$pkg" >/dev/null 2>&1 && ! dpkg -s "$pkg" >/dev/null 2>&1; then
         MISSING_PKGS+=("$pkg")
     fi
 done
@@ -112,6 +112,7 @@ if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
     apt-get update -y
     apt-get install -y "${MISSING_PKGS[@]}"
 fi
+systemctl enable --now rsyslog 2>/dev/null || true
 
 # 5. Directory layout
 INSTALL_DIR="/usr/local/bin"
@@ -233,7 +234,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/3r-ui /var/log/3r-ui
+ReadWritePaths=/var/lib/3r-ui /var/log/3r-ui -/etc/fail2ban
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -254,7 +255,63 @@ chmod 644 "$SERVICE_FILE"
 systemctl daemon-reload
 systemctl enable 3r-ui
 
-# 9. Start service
+# 9. Configure Fail2ban for SSH and 3R-UI
+info "Configuring Fail2ban security rules (SSH & 3R-UI protection)..."
+if command -v fail2ban-client >/dev/null 2>&1; then
+    mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+
+    # Install 3r-ui login failure filter
+    cat <<'EOF' > /etc/fail2ban/filter.d/3r-ui.conf
+# Fail2ban filter for 3R-UI Web Console
+[Definition]
+failregex = ^.*\[SECURITY\] Web login failed for user='.*' from ip='<HOST>'.*$
+ignoreregex =
+EOF
+
+    # Detect current SSH port to avoid lockout
+    SSH_PORT=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || true)
+    [[ -z "$SSH_PORT" ]] && SSH_PORT="22"
+
+    # Remove Debian default conflicting jail file
+    rm -f /etc/fail2ban/jail.d/defaults-debian.conf
+
+    # Configure global /etc/fail2ban/jail.local (highest priority, ensures backend = systemd across jails)
+    cat <<EOF > /etc/fail2ban/jail.local
+# 3R-UI Fail2ban Jail Configuration
+[DEFAULT]
+backend = systemd
+ignoreip = 127.0.0.1/8 ::1
+bantime = 1d
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+port = $SSH_PORT
+backend = systemd
+maxretry = 3
+bantime = 1d
+
+[3r-ui]
+enabled = true
+port = 8443,http,https
+filter = 3r-ui
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=3r-ui.service + SYSLOG_IDENTIFIER=3r-ui
+maxretry = 5
+findtime = 10m
+bantime = 1d
+EOF
+
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl restart fail2ban 2>/dev/null || true
+    systemctl enable fail2ban 2>/dev/null || true
+    success "Fail2ban protection configured for SSH (port $SSH_PORT) and 3R-UI."
+else
+    warn "fail2ban is not installed; skipping Fail2ban jail configuration."
+fi
+
+# 10. Start service
 info "Starting 3R-UI service..."
 systemctl restart 3r-ui
 

@@ -5,6 +5,7 @@ pub mod error;
 pub mod mieru;
 pub mod proxy;
 pub mod quota;
+pub mod security;
 pub mod share;
 pub mod web;
 pub mod xray;

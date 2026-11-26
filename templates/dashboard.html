@@ -106,7 +106,7 @@
     <h1>3R-UI</h1>
     <div>
       <span class="who">{{ username }}</span>
-      <form method="post" action="/admin/logout" style="display:inline">
+      <form method="post" action="{{ base_path }}/admin/logout" style="display:inline">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button class="btn btn-secondary" type="submit">退出登录</button>
       </form>
@@ -195,15 +195,28 @@
           <div class="meter-bar">
             <div id="bar-mem" class="meter-fill {% if system.mem_percent > 85.0 %}danger{% else if system.mem_percent > 70.0 %}warn{% endif %}" style="width: {{ system.mem_percent }}%;"></div>
           </div>
-          <div class="stat-sub" style="margin-top:6px; padding-top:6px; border-top:1px dashed rgba(0,0,0,0.08); font-size:11px; display:flex; flex-direction:column; gap:2px;">
-            <div style="display:flex; justify-content:space-between;">
+          <div class="stat-sub" style="margin-top:6px; padding-top:6px; border-top:1px dashed rgba(0,0,0,0.08); font-size:11px; display:flex; flex-direction:column; gap:3px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
               <span>程序进程合计内存：</span>
               <strong id="metric-app-total-mem" style="color:#3b82f6;">{{ system.app_total_mem_formatted }}</strong>
             </div>
-            <div style="font-size:10px; opacity:0.6; display:flex; justify-content:space-between; gap:6px;">
-              <span>面板: <span id="metric-panel-mem">{{ system.app_panel_mem_formatted }}</span></span>
-              <span>Xray: <span id="metric-xray-mem">{{ system.app_xray_mem_formatted }}</span></span>
-              <span>Mieru: <span id="metric-mieru-mem">{{ system.app_mieru_mem_formatted }}</span></span>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; font-size:10px; opacity:0.75; margin-top:2px;">
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>面板:</span>
+                <span id="metric-panel-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_panel_mem_formatted }}</span>
+              </div>
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>Xray:</span>
+                <span id="metric-xray-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_xray_mem_formatted }}</span>
+              </div>
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>Hy2:</span>
+                <span id="metric-hy2-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_hy2_mem_formatted }}</span>
+              </div>
+              <div style="display:flex; justify-content:space-between; white-space:nowrap;">
+                <span>Mieru:</span>
+                <span id="metric-mieru-mem" style="font-family:ui-monospace, SFMono-Regular, monospace;">{{ system.app_mieru_mem_formatted }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -287,12 +300,12 @@
         <dt>XHTTP 路径</dt><dd><code>{{ ib.xhttp_path }}</code></dd>
       </dl>
       <div style="margin-top: 14px;">
-        <a href="/admin/inbound" class="btn btn-secondary">前往入站设置修改</a>
+        <a href="{{ base_path }}/admin/inbound" class="btn btn-secondary">前往入站设置修改</a>
       </div>
       {% when None %}
       <p class="empty">尚未配置入站连接。</p>
       <div style="margin-top: 10px;">
-        <a href="/admin/inbound" class="btn btn-primary">立即配置入站</a>
+        <a href="{{ base_path }}/admin/inbound" class="btn btn-primary">立即配置入站</a>
       </div>
       {% endmatch %}
     </section>
@@ -314,10 +327,16 @@
         <dt>监听端口</dt><dd><code>{{ p.listen_port }}</code></dd>
         <dt>绑定域名</dt>
         <dd>{% if p.domain.is_empty() %}<span style="opacity: 0.5;">未指定域名</span>{% else %}<code>{{ p.domain }}</code>{% endif %}</dd>
+        <dt>面板访问路径</dt>
+        <dd>{% if p.path.is_empty() %}<code>/</code> (根路径){% else %}<code>{{ p.path }}</code>{% endif %}</dd>
+        {% if p.enabled && !p.full_url.is_empty() %}
+        <dt>访问入口</dt>
+        <dd><a href="{{ p.full_url }}" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; text-decoration: underline;">{{ p.full_url }}</a></dd>
+        {% endif %}
         <dt>SSL 证书状态</dt><dd>{{ p.cert_status }}</dd>
       </dl>
       <div style="margin-top: 14px;">
-        <a href="/admin/settings" class="btn btn-secondary">前往系统设置管理</a>
+        <a href="{{ base_path }}/admin/proxy" class="btn btn-secondary">前往反向代理管理</a>
       </div>
       {% when None %}
       <p class="empty">未加载反代配置。</p>
@@ -346,7 +365,7 @@
       }
 
       function pollSystemStatus() {
-        fetch('/admin/api/system-status', {
+        fetch('{{ base_path }}/admin/api/system-status', {
           headers: { 'Accept': 'application/json' }
         })
         .then(function (res) {
@@ -370,6 +389,7 @@
           setText('metric-app-total-mem', data.app_total_mem_formatted);
           setText('metric-panel-mem', data.app_panel_mem_formatted);
           setText('metric-xray-mem', data.app_xray_mem_formatted);
+          setText('metric-hy2-mem', data.app_hy2_mem_formatted);
           setText('metric-mieru-mem', data.app_mieru_mem_formatted);
           updateMeterBar('bar-mem', data.mem_percent);
 

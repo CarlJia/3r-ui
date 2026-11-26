@@ -18,3 +18,13 @@
 # Local Deployment Config (contains server credentials / IP)
 deploy.conf
 scripts/deploy.conf
+
+# IDE & Editor files
+.idea/
+.run/
+.vscode/
+*.iml
+
+# Local dev/test scratch & codegraph
+.codegraph/
+

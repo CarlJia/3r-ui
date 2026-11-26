@@ -46,12 +46,12 @@
     .card-head .btn { margin: 0; }
     .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
     .empty { font-size: 13px; opacity: .6; padding: 12px 0; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
     th, td {
       text-align: left; padding: 8px 10px; border-bottom: 1px solid #eceef1;
       vertical-align: middle;
     }
-    th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase; }
+    th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
     .uuid {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px; background: #f4f5f7; padding: 2px 6px;
@@ -99,7 +99,7 @@
       <div class="card-head">
         <h2>VLESS 用户</h2>
         {% if has_inbound %}
-        <a class="btn btn-primary" href="/admin/clients/new">添加用户</a>
+        <a class="btn btn-primary" href="{{ base_path }}/admin/clients/new">添加用户</a>
         {% endif %}
       </div>
       <p class="hint">每个用户对应一个 VLESS UUID，配额单位 GB；过期后将自动从 xray 配置中剔除。</p>
@@ -123,8 +123,8 @@
         <tbody>
           {% for c in clients %}
           <tr>
-            <td>{% if c.base.name.is_empty() %}<span class="muted">未命名</span>{% else %}{{ c.base.name }}{% endif %}</td>
-            <td><span class="uuid">{{ c.base.uuid[..8] }}…</span></td>
+            <td>{% if c.base.name.is_empty() %}<span class="muted">未命名</span>{% else %}<span class="table-truncate" style="max-width: 160px;" data-tooltip="{{ c.base.name }}" title="{{ c.base.name }}">{{ c.base.name }}</span>{% endif %}</td>
+            <td><span class="uuid" data-tooltip="{{ c.base.uuid }}" title="{{ c.base.uuid }}">{{ c.base.uuid[..8] }}…</span></td>
             <td><strong>{{ c.used }}</strong><span class="muted usage-detail">上行 {{ c.uplink }} / 下行 {{ c.downlink }}</span></td>
             <td>{% if c.base.quota_gb > 0 %}{{ c.base.quota_gb }} GB{% else %}<span class="muted">不限</span>{% endif %}</td>
             <td>{% match c.base.expiry_date %}{% when Some with (d) %}{{ d }}{% when None %}<span class="muted">永不过期</span>{% endmatch %}</td>
@@ -135,13 +135,13 @@
             </td>
             <td>
               <div class="row-actions">
-                <form method="post" action="/admin/clients/{{ c.base.id }}/toggle">
+                <form method="post" action="{{ base_path }}/admin/clients/{{ c.base.id }}/toggle">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button class="btn btn-secondary" type="submit">{% if c.base.active %}禁用{% else %}启用{% endif %}</button>
                 </form>
-                <a class="btn btn-secondary" href="/admin/clients/{{ c.base.id }}">详情</a>
-                <a class="btn btn-secondary" href="/admin/clients/{{ c.base.id }}/edit">编辑</a>
-                <form method="post" action="/admin/clients/{{ c.base.id }}/delete">
+                <a class="btn btn-secondary" href="{{ base_path }}/admin/clients/{{ c.base.id }}">详情</a>
+                <a class="btn btn-secondary" href="{{ base_path }}/admin/clients/{{ c.base.id }}/edit">编辑</a>
+                <form method="post" action="{{ base_path }}/admin/clients/{{ c.base.id }}/delete">
                   <input type="hidden" name="csrf" value="{{ csrf }}">
                   <button class="btn btn-danger" type="submit">删除</button>
                 </form>

@@ -16,7 +16,9 @@ use axum_extra::extract::cookie::CookieJar;
 use crate::crypto::session::parse_expiry;
 use crate::crypto::uuid;
 use crate::db::models::{Client, Inbound};
-use crate::web::middleware::{csrf_from_cookies, url_encode, CurrentAdmin, SECURITY_HEADERS};
+use crate::web::middleware::{
+    csrf_from_cookies, url_encode, BasePath, CurrentAdmin, SECURITY_HEADERS,
+};
 use crate::web::AppState;
 use crate::xray::config;
 use crate::xray::SupervisorCommand;
@@ -30,6 +32,7 @@ struct ClientsListTemplate {
     csrf: String,
     clients: Vec<ClientListView>,
     has_inbound: bool,
+    base_path: String,
 }
 
 #[derive(Template)]
@@ -40,6 +43,7 @@ struct ClientsFormTemplate {
     inbounds: Vec<crate::web::inbound::InboundView>,
     bound_inbound_ids: Vec<i64>,
     error: Option<String>,
+    base_path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +68,7 @@ struct ClientsDetailTemplate {
     sub_url: String,
     sub_qr_path: String,
     nodes: Vec<ClientNodeCard>,
+    base_path: String,
 }
 
 /// What the templates render. Decoupled from [`Client`] so we can layer in
@@ -139,8 +144,10 @@ pub fn generate_sub_token() -> String {
 pub async fn list(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     if let Err(e) = disable_expired(&state.pool).await {
         tracing::warn!(error = %e, "expired-client sweep failed before list");
     }
@@ -181,6 +188,7 @@ pub async fn list(
         csrf: csrf_from_cookies(&jar),
         clients,
         has_inbound,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -191,8 +199,10 @@ pub async fn list(
 pub async fn new_form(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let inbounds = list_all_active_inbounds(&state.pool)
         .await
         .unwrap_or_default();
@@ -211,6 +221,7 @@ pub async fn new_form(
         } else {
             Some("请先在入站页面创建入站后再添加用户".to_string())
         },
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -221,9 +232,11 @@ pub async fn new_form(
 pub async fn create(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<ClientForm>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let all_inbounds = list_all_active_inbounds(&state.pool)
         .await
         .unwrap_or_default();
@@ -234,12 +247,13 @@ pub async fn create(
             &all_inbounds,
             vec![],
             "请先在入站页面创建入站".to_string(),
+            &base_path,
         );
     }
 
     let parsed = match parse_client_form(&form) {
         Ok(p) => p,
-        Err(msg) => return render_form_error(&jar, None, &all_inbounds, vec![], msg),
+        Err(msg) => return render_form_error(&jar, None, &all_inbounds, vec![], msg, &base_path),
     };
 
     let new_uuid = match uuid::v4() {
@@ -252,6 +266,7 @@ pub async fn create(
                 &all_inbounds,
                 vec![],
                 "UUID 生成失败".to_string(),
+                &base_path,
             );
         }
     };
@@ -307,7 +322,14 @@ pub async fn create(
         Ok(r) => r.last_insert_rowid(),
         Err(e) => {
             tracing::error!(error = %e, "client insert failed");
-            return render_form_error(&jar, None, &all_inbounds, vec![], "保存失败".to_string());
+            return render_form_error(
+                &jar,
+                None,
+                &all_inbounds,
+                vec![],
+                "保存失败".to_string(),
+                &base_path,
+            );
         }
     };
 
@@ -322,16 +344,18 @@ pub async fn create(
     }
 
     reload(&state).await;
-    redirect_to_list(&jar)
+    redirect_to_list(&jar, &base_path)
 }
 
 /// `GET /admin/clients/:id/edit` — render the form pre-filled with the row.
 pub async fn edit_form(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
-    jar: CookieJar,
     Path(id): Path<i64>,
+    base_path_ext: Option<Extension<BasePath>>,
+    jar: CookieJar,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let client = match load_client(&state.pool, id).await {
         Ok(Some(c)) => c,
         Ok(None) => return not_found_response(),
@@ -364,6 +388,7 @@ pub async fn edit_form(
             .collect(),
         bound_inbound_ids,
         error: None,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -374,9 +399,11 @@ pub async fn edit_form(
 pub async fn detail(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
-    jar: CookieJar,
     Path(id): Path<i64>,
+    base_path_ext: Option<Extension<BasePath>>,
+    jar: CookieJar,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let mut client = match load_client(&state.pool, id).await {
         Ok(Some(c)) => c,
         Ok(None) => return not_found_response(),
@@ -399,7 +426,7 @@ pub async fn detail(
     let bound_inbounds: Vec<Inbound> = sqlx::query_as(
         "SELECT i.id, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
                 i.short_id, i.xhttp_path, i.protocol, i.cert_mode, i.custom_cert_path, i.custom_key_path, \
-                i.masquerade_url, i.port_range, i.transport_protocol, i.status, i.created_at, i.updated_at \
+                i.masquerade_url, i.port_range, i.transport_protocol, i.skip_cert_verify, i.udp, i.status, i.created_at, i.updated_at \
          FROM inbounds i \
          JOIN client_inbounds ci ON ci.inbound_id = i.id \
          WHERE ci.client_id = ? AND i.status = 'active' \
@@ -452,9 +479,17 @@ pub async fn detail(
 
     let host = bare_host.to_string();
 
+    let proxy_settings = crate::proxy::config::get_proxy_settings(&state.pool)
+        .await
+        .ok();
+    let sub_path = proxy_settings
+        .as_ref()
+        .map(|p| p.normalized_sub_path())
+        .unwrap_or_else(|| "/sub".to_string());
+
     let sub_token = client.sub_token.clone().unwrap_or_default();
-    let sub_url = format!("{sub_scheme}://{host}/sub/{sub_token}");
-    let sub_qr_path = format!("/admin/clients/{id}/qr.png?sub=1");
+    let sub_url = format!("{sub_scheme}://{host}{sub_path}/{sub_token}");
+    let sub_qr_path = format!("{base_path}/admin/clients/{id}/qr.png?sub=1");
 
     let nodes: Vec<ClientNodeCard> = inbounds
         .iter()
@@ -479,7 +514,7 @@ pub async fn detail(
             } else {
                 crate::share::vless::build_uri(&c_clone, ib, &host)
             };
-            let qr_path = format!("/admin/clients/{id}/qr.png?inbound_id={}", ib.id);
+            let qr_path = format!("{base_path}/admin/clients/{id}/qr.png?inbound_id={}", ib.id);
 
             ClientNodeCard {
                 inbound_id: ib.id,
@@ -500,7 +535,10 @@ pub async fn detail(
         .map(|n| n.uri.clone())
         .unwrap_or_default();
 
-    let qr_path = format!("/admin/clients/{id}/qr.png?host={}", url_encode(&host));
+    let qr_path = format!(
+        "{base_path}/admin/clients/{id}/qr.png?host={}",
+        url_encode(&host)
+    );
 
     let html = ClientsDetailTemplate {
         client: ClientView::from(&client),
@@ -511,6 +549,7 @@ pub async fn detail(
         sub_url,
         sub_qr_path,
         nodes,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -562,12 +601,19 @@ pub async fn qr_png(
 
     let uri = if params.contains_key("sub") {
         let tok = client.sub_token.clone().unwrap_or_default();
-        format!("{sub_scheme}://{host}/sub/{tok}")
+        let proxy_settings = crate::proxy::config::get_proxy_settings(&state.pool)
+            .await
+            .ok();
+        let sub_path = proxy_settings
+            .as_ref()
+            .map(|p| p.normalized_sub_path())
+            .unwrap_or_else(|| "/sub".to_string());
+        format!("{sub_scheme}://{host}{sub_path}/{tok}")
     } else if let Some(ib_id) = params.get("inbound_id").and_then(|s| s.parse::<i64>().ok()) {
         let inbound = match sqlx::query_as::<_, Inbound>(
             "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                     xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                    port_range, transport_protocol, status, created_at, updated_at \
+                    port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
              FROM inbounds WHERE id = ?",
         )
         .bind(ib_id)
@@ -628,7 +674,7 @@ async fn load_active_inbound(pool: &sqlx::SqlitePool) -> crate::error::AppResult
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
     )
     .fetch_optional(pool)
@@ -640,10 +686,12 @@ async fn load_active_inbound(pool: &sqlx::SqlitePool) -> crate::error::AppResult
 pub async fn update(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
-    jar: CookieJar,
     Path(id): Path<i64>,
+    base_path_ext: Option<Extension<BasePath>>,
+    jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<ClientForm>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let existing = match load_client(&state.pool, id).await {
         Ok(Some(c)) => c,
         Ok(None) => return not_found_response(),
@@ -667,7 +715,14 @@ pub async fn update(
         Ok(p) => p,
         Err(msg) => {
             let view = ClientView::from(&existing);
-            return render_form_error(&jar, Some(view), &all_inbounds, current_bound_ids, msg);
+            return render_form_error(
+                &jar,
+                Some(view),
+                &all_inbounds,
+                current_bound_ids,
+                msg,
+                &base_path,
+            );
         }
     };
 
@@ -719,6 +774,7 @@ pub async fn update(
             &all_inbounds,
             current_bound_ids,
             "保存失败".to_string(),
+            &base_path,
         );
     }
 
@@ -745,22 +801,24 @@ pub async fn update(
     }
 
     reload(&state).await;
-    redirect_to_list(&jar)
+    redirect_to_list(&jar, &base_path)
 }
 
 /// `POST /admin/clients/:id/delete` — soft-delete the client.
 pub async fn delete(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     Path(id): Path<i64>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let _ = sqlx::query("UPDATE clients SET status = 'deleted' WHERE id = ?")
         .bind(id)
         .execute(&state.pool)
         .await;
     reload(&state).await;
-    redirect_to_list(&jar)
+    redirect_to_list(&jar, &base_path)
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -773,13 +831,15 @@ pub struct ToggleQuery {
 pub async fn toggle(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     Path(id): Path<i64>,
     axum::extract::Query(query): axum::extract::Query<ToggleQuery>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let client = match load_client(&state.pool, id).await {
         Ok(Some(c)) => c,
-        _ => return redirect_to_list(&jar),
+        _ => return redirect_to_list(&jar, &base_path),
     };
 
     let new_status = if client.status == "active" {
@@ -797,12 +857,14 @@ pub async fn toggle(
     reload(&state).await;
 
     if query.redirect.as_deref() == Some("detail") {
-        decorate(
-            Redirect::to(&format!("/admin/clients/{id}")).into_response(),
-            Some(&jar),
-        )
+        let target = if base_path.is_empty() {
+            format!("/admin/clients/{id}")
+        } else {
+            format!("{base_path}/admin/clients/{id}")
+        };
+        decorate(Redirect::to(&target).into_response(), Some(&jar))
     } else {
-        redirect_to_list(&jar)
+        redirect_to_list(&jar, &base_path)
     }
 }
 
@@ -864,7 +926,7 @@ async fn current_inbound(state: &AppState) -> crate::error::AppResult<Option<Inb
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
     )
     .fetch_optional(&state.pool)
@@ -923,7 +985,7 @@ async fn list_all_active_inbounds(
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id ASC",
     )
     .fetch_all(pool)
@@ -937,6 +999,7 @@ fn render_form_error(
     inbounds: &[Inbound],
     bound_inbound_ids: Vec<i64>,
     error: String,
+    base_path: &str,
 ) -> Response {
     let html = ClientsFormTemplate {
         csrf: csrf_from_cookies(jar),
@@ -947,6 +1010,7 @@ fn render_form_error(
             .collect(),
         bound_inbound_ids,
         error: Some(error),
+        base_path: base_path.to_string(),
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -965,8 +1029,13 @@ fn page_status(status: StatusCode, body: String) -> Response {
     decorate((status, Html(body)).into_response(), None)
 }
 
-fn redirect_to_list(jar: &CookieJar) -> Response {
-    decorate(Redirect::to("/admin/clients").into_response(), Some(jar))
+fn redirect_to_list(jar: &CookieJar, base_path: &str) -> Response {
+    let target = if base_path.is_empty() {
+        "/admin/clients".to_string()
+    } else {
+        format!("{base_path}/admin/clients")
+    };
+    decorate(Redirect::to(&target).into_response(), Some(jar))
 }
 
 fn decorate(mut response: Response, jar: Option<&CookieJar>) -> Response {

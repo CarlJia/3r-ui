@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use crate::crypto::session::now_unix;
+use crate::security::fail2ban::Fail2banStatus;
 use crate::web::middleware::{csrf_from_cookies, render_page, CurrentAdmin};
 use crate::web::AppState;
 use crate::xray::DownloadProgress;
@@ -85,6 +86,7 @@ fn new_job_id() -> String {
 pub async fn settings_page(
     State(state): State<AppState>,
     Extension(CurrentAdmin(admin)): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<crate::web::middleware::BasePath>>,
     jar: CookieJar,
 ) -> Response {
     let xray_bin =
@@ -132,6 +134,63 @@ pub async fn settings_page(
     };
 
     let csrf = csrf_from_cookies(&jar);
+    let certs_dir = data_dir.join("certs").display().to_string();
+
+    let fail2ban = crate::security::fail2ban::get_status().await;
+    let security = sqlx::query_as::<_, crate::db::models::SecuritySettings>(
+        "SELECT id, fail2ban_enabled, ssh_protection, web_protection, maxretry, findtime_secs, bantime_secs, whitelist_ips, updated_at FROM security_settings WHERE id = 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(crate::db::models::SecuritySettings {
+        id: 1,
+        fail2ban_enabled: 1,
+        ssh_protection: 1,
+        web_protection: 1,
+        maxretry: 5,
+        findtime_secs: 600,
+        bantime_secs: 86400,
+        whitelist_ips: "127.0.0.1/8, ::1".to_string(),
+        updated_at: 0,
+    });
+
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
+    let form_action = if base_path.is_empty() {
+        "/admin/settings/xray/update".to_string()
+    } else {
+        format!("{base_path}/admin/settings/xray/update")
+    };
+
+    let html = SettingsTemplate {
+        csrf,
+        username: admin.username.clone(),
+        xray_bin: xray_bin.display().to_string(),
+        download_base,
+        xray_log: xray_log.display().to_string(),
+        data_dir: data_dir.display().to_string(),
+        certs_dir,
+        xray_version: version_output,
+        jobs,
+        form_action,
+        base_path,
+        fail2ban,
+        security,
+    }
+    .render()
+    .unwrap_or_else(|e| format!("template error: {e}"));
+
+    render_page(jar, StatusCode::OK, html)
+}
+
+/// `GET /admin/proxy` — renders the reverse proxy and certs management page.
+pub async fn proxy_page(
+    State(state): State<AppState>,
+    Extension(CurrentAdmin(admin)): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<crate::web::middleware::BasePath>>,
+    jar: CookieJar,
+) -> Response {
+    let data_dir = state.config.data_dir.clone();
+    let csrf = csrf_from_cookies(&jar);
 
     let proxy_raw = crate::proxy::config::get_proxy_settings(&state.pool)
         .await
@@ -140,6 +199,8 @@ pub async fn settings_page(
             enabled: 0,
             listen_port: 8443,
             domain: String::new(),
+            path: String::new(),
+            sub_path: "/sub".to_string(),
             cert_mode: "cf_dns".to_string(),
             cf_api_token: String::new(),
             cf_zone_id: String::new(),
@@ -169,7 +230,10 @@ pub async fn settings_page(
     let proxy = ProxySettingsView {
         enabled: proxy_raw.is_enabled(),
         listen_port: proxy_raw.listen_port,
-        domain: proxy_raw.domain,
+        domain: proxy_raw.domain.clone(),
+        path: proxy_raw.path.clone(),
+        sub_path: proxy_raw.sub_path.clone(),
+        full_url: proxy_raw.full_url(),
         cert_mode: proxy_raw.cert_mode,
         masked_token,
         cf_zone_id: proxy_raw.cf_zone_id,
@@ -180,19 +244,14 @@ pub async fn settings_page(
     };
 
     let certs_view = crate::proxy::cert::scan_certs_dir(&data_dir);
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
 
-    let html = SettingsTemplate {
+    let html = ProxyTemplate {
         csrf,
         username: admin.username.clone(),
-        xray_bin: xray_bin.display().to_string(),
-        download_base,
-        xray_log: xray_log.display().to_string(),
-        data_dir: data_dir.display().to_string(),
-        xray_version: version_output,
-        jobs,
         proxy,
         certs_view,
-        form_action: "/admin/settings/xray/update".to_string(),
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -214,11 +273,23 @@ struct SettingsTemplate {
     download_base: String,
     xray_log: String,
     data_dir: String,
+    certs_dir: String,
     xray_version: String,
     jobs: Vec<JobRowView>,
+    form_action: String,
+    base_path: String,
+    fail2ban: Fail2banStatus,
+    security: crate::db::models::SecuritySettings,
+}
+
+#[derive(Template)]
+#[template(path = "proxy.html", escape = "html")]
+struct ProxyTemplate {
+    csrf: String,
+    username: String,
     proxy: ProxySettingsView,
     certs_view: crate::proxy::cert::CertsDirView,
-    form_action: String,
+    base_path: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -226,6 +297,9 @@ pub struct ProxySettingsView {
     pub enabled: bool,
     pub listen_port: i64,
     pub domain: String,
+    pub path: String,
+    pub sub_path: String,
+    pub full_url: String,
     pub cert_mode: String,
     pub masked_token: String,
     pub cf_zone_id: String,
@@ -241,6 +315,8 @@ pub struct ProxySettingsForm {
     pub enabled: Option<String>,
     pub listen_port: u16,
     pub domain: String,
+    pub path: Option<String>,
+    pub sub_path: Option<String>,
     pub cert_mode: String,
     pub cf_api_token: Option<String>,
     pub cf_zone_id: Option<String>,
@@ -251,6 +327,7 @@ pub struct ProxySettingsForm {
 pub async fn save_proxy_settings(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<crate::web::middleware::BasePath>>,
     axum::extract::Form(form): axum::extract::Form<ProxySettingsForm>,
 ) -> Response {
     let is_enabled = form.enabled.as_deref() == Some("on")
@@ -258,12 +335,16 @@ pub async fn save_proxy_settings(
         || form.enabled.as_deref() == Some("1");
     let custom_cert = form.custom_cert_path.as_deref().unwrap_or_default();
     let custom_key = form.custom_key_path.as_deref().unwrap_or_default();
+    let raw_path = form.path.as_deref().unwrap_or_default();
+    let raw_sub_path = form.sub_path.as_deref().unwrap_or_default();
 
     if let Err(e) = crate::proxy::config::update_proxy_settings(
         &state.pool,
         is_enabled,
         form.listen_port,
         &form.domain,
+        raw_path,
+        raw_sub_path,
         &form.cert_mode,
         form.cf_api_token.as_deref(),
         form.cf_zone_id.as_deref(),
@@ -280,7 +361,19 @@ pub async fn save_proxy_settings(
         .send(crate::proxy::ProxyCommand::Reload)
         .await;
 
-    Redirect::to("/admin/settings").into_response()
+    let clean_path = crate::db::models::normalize_panel_path(raw_path);
+    let redirect_target = if clean_path.is_empty() {
+        let base_p = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
+        if base_p.is_empty() {
+            "/admin/proxy".to_string()
+        } else {
+            format!("{base_p}/admin/proxy")
+        }
+    } else {
+        format!("{clean_path}/admin/proxy")
+    };
+
+    Redirect::to(&redirect_target).into_response()
 }
 
 pub async fn request_cert_now(
@@ -304,7 +397,7 @@ pub async fn request_cert_now(
                 )
                     .into_response();
             }
-            return Redirect::to("/admin/settings").into_response();
+            return Redirect::to("/admin/proxy").into_response();
         }
     };
 
@@ -328,7 +421,7 @@ pub async fn request_cert_now(
             )
                 .into_response();
         }
-        return Redirect::to("/admin/settings").into_response();
+        return Redirect::to("/admin/proxy").into_response();
     }
 
     let pool = state.pool.clone();
@@ -379,7 +472,7 @@ pub async fn request_cert_now(
         return axum::Json(serde_json::json!({ "status": "ok" })).into_response();
     }
 
-    Redirect::to("/admin/settings").into_response()
+    Redirect::to("/admin/proxy").into_response()
 }
 
 /// `GET /admin/settings/proxy/cert-status` — JSON polling endpoint for ACME logs & progress.
@@ -789,6 +882,130 @@ pub async fn certs_dir_json(
 ) -> Response {
     let view = crate::proxy::cert::scan_certs_dir(&state.config.data_dir);
     (StatusCode::OK, axum::Json(view)).into_response()
+}
+
+/// `GET /admin/settings/fail2ban/status` — JSON API for Fail2ban status
+pub async fn fail2ban_status_api(
+    State(_state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+) -> Response {
+    let status = crate::security::fail2ban::get_status().await;
+    axum::Json(status).into_response()
+}
+
+/// Unban form
+#[derive(Deserialize)]
+pub struct UnbanForm {
+    pub csrf: String,
+    pub jail: String,
+    pub ip: String,
+}
+
+/// `POST /admin/settings/fail2ban/unban` — unban an IP from a jail
+pub async fn fail2ban_unban_api(
+    State(_state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    axum::extract::Form(form): axum::extract::Form<UnbanForm>,
+) -> Response {
+    let expected = csrf_from_cookies(&jar);
+    if !crate::crypto::session::constant_time_eq(&expected, &form.csrf) {
+        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+    }
+
+    match crate::security::fail2ban::unban_ip(&form.jail, &form.ip).await {
+        Ok(()) => (StatusCode::OK, "unbanned successfully").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("failed: {e}")).into_response(),
+    }
+}
+
+/// `POST /admin/settings/fail2ban/install` — install fail2ban
+pub async fn fail2ban_install_api(
+    State(_state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    axum::extract::Form(form): axum::extract::Form<UpdateForm>,
+) -> Response {
+    let expected = csrf_from_cookies(&jar);
+    if !crate::crypto::session::constant_time_eq(&expected, &form.csrf) {
+        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+    }
+
+    match crate::security::fail2ban::install_fail2ban().await {
+        Ok(msg) => (StatusCode::OK, msg).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Form for saving security settings
+#[derive(Deserialize)]
+pub struct SecuritySettingsForm {
+    pub csrf: String,
+    pub fail2ban_enabled: Option<String>,
+    pub ssh_protection: Option<String>,
+    pub web_protection: Option<String>,
+    pub maxretry: Option<i64>,
+    pub findtime_secs: Option<i64>,
+    pub bantime_secs: Option<i64>,
+    pub whitelist_ips: Option<String>,
+}
+
+/// `POST /admin/settings/security` — save security and fail2ban configuration
+pub async fn save_security_settings(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    axum::extract::Form(form): axum::extract::Form<SecuritySettingsForm>,
+) -> Response {
+    let expected = csrf_from_cookies(&jar);
+    if !crate::crypto::session::constant_time_eq(&expected, &form.csrf) {
+        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+    }
+
+    let fail2ban_enabled = if form.fail2ban_enabled.is_some() {
+        1
+    } else {
+        0
+    };
+    let ssh_protection = if form.ssh_protection.is_some() { 1 } else { 0 };
+    let web_protection = if form.web_protection.is_some() { 1 } else { 0 };
+    let maxretry = form.maxretry.unwrap_or(5);
+    let findtime_secs = form.findtime_secs.unwrap_or(600);
+    let bantime_secs = form.bantime_secs.unwrap_or(86400);
+    let whitelist_ips = form
+        .whitelist_ips
+        .unwrap_or_else(|| "127.0.0.1/8, ::1".to_string());
+
+    let _ = sqlx::query(
+        "UPDATE security_settings SET fail2ban_enabled = ?, ssh_protection = ?, web_protection = ?, maxretry = ?, findtime_secs = ?, bantime_secs = ?, whitelist_ips = ?, updated_at = unixepoch() WHERE id = 1",
+    )
+    .bind(fail2ban_enabled)
+    .bind(ssh_protection)
+    .bind(web_protection)
+    .bind(maxretry)
+    .bind(findtime_secs)
+    .bind(bantime_secs)
+    .bind(&whitelist_ips)
+    .execute(&state.pool)
+    .await;
+
+    // 同步配置到 Fail2ban 守护进程（若已安装）
+    let updated_settings = crate::db::models::SecuritySettings {
+        id: 1,
+        fail2ban_enabled,
+        ssh_protection,
+        web_protection,
+        maxretry,
+        findtime_secs,
+        bantime_secs,
+        whitelist_ips,
+        updated_at: 0,
+    };
+    if let Err(e) = crate::security::fail2ban::sync_fail2ban_config(&updated_settings).await {
+        tracing::warn!("Failed to sync fail2ban config: {e}");
+    }
+
+    Redirect::to("/admin/settings").into_response()
 }
 
 /// Query parameters for downloading a public certificate

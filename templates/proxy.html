@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 反向代理与证书</title>
+  {% include "theme_head.html" %}
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input, select { background: #16181d !important; color: #e6e8eb !important;
+                      border-color: #2c3037 !important; }
+      table { border-color: #2c3037 !important; }
+      th, td { border-color: #2c3037 !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    header .who { font-size: 13px; opacity: .7; margin-right: 16px; }
+    main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    dl { margin: 0; display: grid; grid-template-columns: 160px 1fr; gap: 8px 12px; }
+    dt { font-size: 13px; font-weight: 500; opacity: .7; }
+    dd { margin: 0; font-size: 13px; word-break: break-all; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    input {
+      width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px;
+      border: 1px solid #d5d9de; background: #fff; color: inherit; margin-bottom: 14px;
+    }
+    button, .btn {
+      padding: 8px 14px; font-size: 14px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none;
+      display: inline-block;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #2f6fd8; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eceef1; }
+    th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase; }
+    .empty { font-size: 13px; opacity: .6; padding: 12px 0; }
+    .status-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+    }
+    .status-badge-queued,
+    .status-badge-downloading,
+    .status-badge-downloaded,
+    .status-badge-restarting {
+      background: #eceef1; color: #4a5260;
+    }
+    .status-badge-succeeded { background: #e3f5e9; color: #1a7f42; }
+    .status-badge-failed { background: #fdecec; color: #a4262c; }
+    .table-scroll { overflow-x: auto; }
+    .cert-domain-card { border: 1px solid #e3e6ea; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: rgba(0,0,0,0.01); }
+    .cert-view-box { margin-top: 14px; padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.02); border: 1px solid #e3e6ea; }
+    .cert-pem-area { width: 100%; height: 160px; font-family: ui-monospace, monospace; font-size: 11px; background: #fff; color: #1c2024; border: 1px solid #d5d9de; border-radius: 6px; padding: 8px; resize: vertical; box-sizing: border-box; }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) .cert-domain-card { border-color: #2c3037 !important; background: rgba(255,255,255,0.02) !important; }
+      html:not([data-theme="light"]) .cert-view-box { border-color: #2c3037 !important; background: #16181d !important; }
+      html:not([data-theme="light"]) .cert-pem-area { border-color: #2c3037 !important; background: #16181d !important; color: #cbd5e1 !important; }
+    }
+    html[data-theme="dark"] .cert-domain-card { border-color: #2c3037 !important; background: rgba(255,255,255,0.02) !important; }
+    html[data-theme="dark"] .cert-view-box { border-color: #2c3037 !important; background: #16181d !important; }
+    html[data-theme="dark"] .cert-pem-area { border-color: #2c3037 !important; background: #16181d !important; color: #cbd5e1 !important; }
+    {% include "sidebar_style.html" %}
+  </style>
+</head>
+<body>
+  {% let nav_active = "proxy" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
+  <header>
+    <h1>反向代理与证书</h1>
+    <div>
+      <span class="who">{{ username }}</span>
+      <form method="post" action="{{ base_path }}/admin/logout" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn btn-secondary" type="submit">退出登录</button>
+      </form>
+    </div>
+  </header>
+  <main>
+
+    <!-- 反向代理与 HTTPS 域名访问 (Pingora) -->
+    <section class="card">
+      <h2>反向代理与 HTTPS 域名访问 (Pingora)</h2>
+      <p class="hint">启用 Pingora 内置反向代理以支持域名及自动化 HTTPS 访问 3R-UI 面板，无需前置安装 Nginx 或 Caddy。</p>
+      <form method="post" action="{{ base_path }}/admin/proxy">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+
+        <div style="margin-bottom: 14px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" name="enabled" value="true" {% if proxy.enabled %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+            <span>启用反向代理服务</span>
+          </label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div>
+            <label for="domain">访问域名 (FQDN)</label>
+            <input type="text" id="domain" name="domain" value="{{ proxy.domain }}" placeholder="例如: panel.example.com">
+          </div>
+          <div>
+            <label for="listen_port">监听端口 (默认 8443)</label>
+            <input type="number" id="listen_port" name="listen_port" value="{{ proxy.listen_port }}" min="1" max="65535" required>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px;">
+          <div>
+            <label for="path">面板访问路径 (Path)</label>
+            <input type="text" id="path" name="path" value="{{ proxy.path }}" placeholder="例如: /xxjjye (留空表示根路径)">
+            <p class="hint" style="margin-top: -8px; font-size: 12px;">自定义管理后台访问路径。设置后仅能通过此路径登录，直接访问根路径将返回 404。</p>
+          </div>
+          <div>
+            <label for="sub_path">订阅访问路径 (Sub Path)</label>
+            <input type="text" id="sub_path" name="sub_path" value="{{ proxy.sub_path }}" placeholder="默认: /sub">
+            <p class="hint" style="margin-top: -8px; font-size: 12px;">自定义客户端订阅拉取路径。默认通过 /sub/:token 订阅。</p>
+          </div>
+        </div>
+
+        {% if proxy.enabled && !proxy.domain.is_empty() %}
+        <div style="margin-bottom: 14px; padding: 12px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px; font-size: 13px;">
+          <div><strong>当前面板完整访问入口：</strong><a href="{{ proxy.full_url }}" target="_blank" rel="noopener noreferrer" style="color: #3b82f6; font-weight: 600; text-decoration: underline;">{{ proxy.full_url }}</a></div>
+          <div style="margin-top: 4px; font-size: 12px; opacity: 0.75;">保存自定义路径后，请务必使用完整访问入口进行登录与管理。</div>
+        </div>
+        {% endif %}
+
+        <div style="margin-bottom: 14px;">
+          <label for="cert_mode">证书管理模式</label>
+          <select id="cert_mode" name="cert_mode" style="width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px; border: 1px solid #d5d9de; margin-bottom: 14px;">
+            <option value="cf_dns" {% if proxy.cert_mode == "cf_dns" %}selected{% endif %}>Cloudflare DNS 自动化申请与续期 (DNS-01 验证)</option>
+            <option value="custom" {% if proxy.cert_mode == "custom" %}selected{% endif %}>自定义证书文件路径 (本地 PEM)</option>
+          </select>
+        </div>
+
+        <div id="cf-settings-group" style="{% if proxy.cert_mode != "cf_dns" %}display: none;{% endif %}">
+          <label for="cf_api_token">Cloudflare API Token {% if !proxy.masked_token.is_empty() %}<span style="opacity: 0.6; font-weight: normal;">(已配置: {{ proxy.masked_token }}，留空保持不变)</span>{% endif %}</label>
+          <input type="password" id="cf_api_token" name="cf_api_token" placeholder="输入具备 Zone:DNS Edit 权限的 API Token">
+
+          <label for="cf_zone_id">Cloudflare Zone ID <span style="opacity: 0.6; font-weight: normal;">(可选，留空将通过 API 自动查询)</span></label>
+          <input type="text" id="cf_zone_id" name="cf_zone_id" value="{{ proxy.cf_zone_id }}" placeholder="例如: 023e105f4ecef8ad9ca31a8372d0c353">
+        </div>
+
+        <div id="custom-cert-group" style="{% if proxy.cert_mode != "custom" %}display: none;{% endif %}">
+          <label for="custom_cert_path">证书公钥文件完整路径 (fullchain.pem)</label>
+          <input type="text" id="custom_cert_path" name="custom_cert_path" value="{{ proxy.custom_cert_path }}" placeholder="/etc/ssl/certs/panel.crt">
+
+          <label for="custom_key_path">证书私钥文件完整路径 (privkey.pem)</label>
+          <input type="text" id="custom_key_path" name="custom_key_path" value="{{ proxy.custom_key_path }}" placeholder="/etc/ssl/private/panel.key">
+        </div>
+
+        <div style="margin-bottom: 14px; padding: 12px; background: rgba(0,0,0,0.03); border-radius: 8px; font-size: 13px;">
+          <div><strong>当前证书状态：</strong><span id="cert-status-val">{{ proxy.cert_status_text }}</span></div>
+          {% match proxy.last_error %}
+          {% when Some with (err) %}
+          <div style="margin-top: 6px; color: #a4262c;"><strong>最近错误：</strong><span>{{ err }}</span></div>
+          {% when None %}
+          {% endmatch %}
+        </div>
+
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <button class="btn btn-primary" type="submit">保存代理配置</button>
+        </div>
+      </form>
+
+      {% if proxy.cert_mode == "cf_dns" && !proxy.domain.is_empty() %}
+      <form method="post" action="{{ base_path }}/admin/proxy/request-cert" style="margin-top: 12px;" id="request-cert-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn btn-secondary" type="submit" id="request-cert-btn">立即申请 / 强制续期证书</button>
+        <span class="hint" style="margin-left: 8px; vertical-align: middle;">将触发后台 ACME DNS-01 验证与证书下载，完成后自动热重载</span>
+      </form>
+      {% endif %}
+
+      <!-- 实时证书申请进度与日志卡片 -->
+      <div id="cert-progress-card" style="display: none; margin-top: 16px; border: 1px solid #d5d9de; border-radius: 8px; padding: 14px; background: rgba(0,0,0,0.02);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h3 style="margin: 0; font-size: 14px; font-weight: 600;">证书申请进度与排查日志</h3>
+          <span id="cert-stage-badge" class="status-badge status-badge-downloading">正在准备…</span>
+        </div>
+        <div style="font-size: 13px; margin-bottom: 8px; opacity: 0.85;">
+          当前阶段：<span id="cert-stage-text" style="font-weight: 600;">正在连接…</span>
+        </div>
+        <div id="cert-log-box" style="background: #1e2126; color: #e6e8eb; font-family: monospace; font-size: 12px; padding: 10px 12px; border-radius: 6px; max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.5;"></div>
+      </div>
+    </section>
+
+    <!-- 证书目录与已安装证书 -->
+    <section class="card" id="cert-directory-section">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
+        <h2 style="margin: 0;">证书目录与文件 ({{ certs_view.total_domains }} 个域名)</h2>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 4px 10px;" onclick="copyText('certs-dir-path-val', '证书存储路径')">复制根路径</button>
+          <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 4px 10px;" onclick="location.reload()">刷新目录</button>
+        </div>
+      </div>
+      <p class="hint">展示 <code>certs/</code> 目录下已申请或安装的所有 TLS 证书与私钥文件。各服务组件（Pingora 反向代理、Hysteria 2 入站等）均基于此目录加载证书。</p>
+
+      <div style="margin-bottom: 16px; padding: 10px 14px; background: rgba(0,0,0,0.03); border-radius: 8px; font-size: 13px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <strong>证书存储根目录：</strong>
+          <code id="certs-dir-path-val" style="font-size: 12px; word-break: break-all;">{{ certs_view.dir_path }}</code>
+        </div>
+        <div>
+          {% if certs_view.exists %}
+          <span class="badge" style="background:#e3f5e9; color:#1a7f42; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">目录正常</span>
+          {% else %}
+          <span class="badge" style="background:#fdecec; color:#a4262c; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">目录未创建</span>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if certs_view.groups.is_empty() %}
+      <div style="text-align: center; padding: 32px 16px; opacity: 0.7;">
+        <p style="margin: 0 0 8px; font-size: 14px;">📁 证书目录暂无任何证书文件</p>
+        <p class="hint" style="margin: 0;">可通过上方 Cloudflare DNS 申请证书，或在入站协议中配置。</p>
+      </div>
+      {% else %}
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        {% for group in certs_view.groups %}
+        <div class="cert-domain-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 16px; font-weight: 600;">🔒 {{ group.domain }}</span>
+              {% if group.cert_status_badge == "valid" %}
+              <span class="badge" style="background:#e3f5e9; color:#1a7f42; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">{{ group.cert_status_text }}</span>
+              {% else if group.cert_status_badge == "expiring" %}
+              <span class="badge" style="background:#fef3c7; color:#b45309; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">{{ group.cert_status_text }}</span>
+              {% else if group.cert_status_badge == "expired" %}
+              <span class="badge" style="background:#fdecec; color:#a4262c; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">{{ group.cert_status_text }}</span>
+              {% else if group.cert_status_badge == "fallback" %}
+              <span class="badge" style="background:#ede9fe; color:#6d28d9; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">{{ group.cert_status_text }}</span>
+              {% else %}
+              <span class="badge" style="background:#fdecec; color:#a4262c; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">{{ group.cert_status_text }}</span>
+              {% endif %}
+            </div>
+            {% if group.has_cert %}
+            <div style="display: flex; gap: 8px;">
+              <a href="{{ base_path }}/admin/proxy/certs/download?domain={{ group.domain }}" class="btn btn-secondary" style="font-size: 12px; padding: 4px 10px; text-decoration: none;">下载证书 (fullchain.pem)</a>
+              <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 4px 10px;" onclick="toggleCertView('{{ loop.index }}')">查看证书详情</button>
+            </div>
+            {% endif %}
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-bottom: 14px; font-size: 13px;">
+            <div><span style="opacity: 0.7;">主体名称 (CN)：</span><code>{{ group.subject }}</code></div>
+            <div><span style="opacity: 0.7;">颁发机构 (Issuer)：</span><span>{{ group.issuer }}</span></div>
+            <div><span style="opacity: 0.7;">生效时间：</span><span>{{ group.not_before }}</span></div>
+            <div><span style="opacity: 0.7;">到期时间：</span><span>{{ group.not_after }}</span></div>
+            {% if !group.san_list.is_empty() %}
+            <div style="grid-column: 1 / -1;"><span style="opacity: 0.7;">备用名称 (SAN)：</span><code>{{ group.san_list.join(", ") }}</code></div>
+            {% endif %}
+            <div style="grid-column: 1 / -1;"><span style="opacity: 0.7;">目录路径：</span><code style="word-break: break-all;">{{ group.dir_path }}</code></div>
+          </div>
+
+          <!-- 文件列表 -->
+          <div class="table-scroll">
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px;">
+              <thead>
+                <tr style="border-bottom: 1px solid #e3e6ea; text-align: left; opacity: 0.7;">
+                  <th style="padding: 6px 8px;">文件名</th>
+                  <th style="padding: 6px 8px;">文件用途</th>
+                  <th style="padding: 6px 8px;">大小</th>
+                  <th style="padding: 6px 8px;">权限</th>
+                  <th style="padding: 6px 8px;">更新时间</th>
+                  <th style="padding: 6px 8px; text-align: right;">安全保护</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for file in group.files %}
+                <tr style="border-bottom: 1px solid rgba(0,0,0,0.05);">
+                  <td style="padding: 6px 8px;"><code class="table-truncate" style="max-width: 220px;" data-tooltip="{{ file.name }}" title="{{ file.name }}">{{ file.name }}</code></td>
+                  <td style="padding: 6px 8px;">{{ file.file_type }}</td>
+                  <td style="padding: 6px 8px;">{{ file.size_formatted }}</td>
+                  <td style="padding: 6px 8px;"><code>{{ file.permissions }}</code></td>
+                  <td style="padding: 6px 8px;">{{ file.modified_at }}</td>
+                  <td style="padding: 6px 8px; text-align: right;">
+                    {% if file.is_key %}
+                    <span class="badge" style="background: rgba(239, 68, 68, 0.1); color: #dc2626; font-size: 11px; padding: 2px 6px; border-radius: 4px;">🔒 私钥保护 (禁止外泄)</span>
+                    {% else %}
+                    <span class="badge" style="background: rgba(59, 130, 246, 0.1); color: #2563eb; font-size: 11px; padding: 2px 6px; border-radius: 4px;">📄 公钥证书 (正常加载)</span>
+                    {% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 证书 PEM 详情折叠预览 -->
+          {% if group.has_cert && !group.cert_pem_preview.is_empty() %}
+          <div id="cert-view-box-{{ loop.index }}" class="cert-view-box" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <strong style="font-size: 12px;">证书公钥链 PEM (fullchain.pem) 内容预览：</strong>
+              <button type="button" class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="copyText('cert-pem-raw-{{ loop.index }}', '证书 PEM 内容')">复制完整证书</button>
+            </div>
+            <textarea id="cert-pem-raw-{{ loop.index }}" class="cert-pem-area" readonly>{{ group.cert_pem_preview }}</textarea>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </section>
+
+  </main>
+  </div>
+
+  <script>
+    function toggleCertView(idx) {
+      var el = document.getElementById('cert-view-box-' + idx);
+      if (el) {
+        el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+      }
+    }
+
+    function copyText(id, label) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      var text = el.value || el.textContent || '';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+          if (window.showToast) {
+            window.showToast((label || '内容') + '已复制到剪贴板', 'success');
+          }
+        }).catch(function() {
+          fallbackCopy(text, label);
+        });
+      } else {
+        fallbackCopy(text, label);
+      }
+    }
+
+    function fallbackCopy(text, label) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        if (window.showToast) {
+          window.showToast((label || '内容') + '已复制到剪贴板', 'success');
+        }
+      } catch (e) {}
+      document.body.removeChild(ta);
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+      // Toggle cert mode fields
+      var certModeSelect = document.getElementById("cert_mode");
+      if (certModeSelect) {
+        certModeSelect.addEventListener("change", function() {
+          var val = this.value;
+          var cfGroup = document.getElementById("cf-settings-group");
+          var customGroup = document.getElementById("custom-cert-group");
+          if (cfGroup) cfGroup.style.display = (val === "cf_dns") ? "" : "none";
+          if (customGroup) customGroup.style.display = (val === "custom") ? "" : "none";
+        });
+      }
+
+      // Cert status polling & live log query
+      var certCard = document.getElementById("cert-progress-card");
+      var certStageBadge = document.getElementById("cert-stage-badge");
+      var certStageText = document.getElementById("cert-stage-text");
+      var certLogBox = document.getElementById("cert-log-box");
+      var certInterval = null;
+
+      function formatTime(ts) {
+        var d = new Date(ts * 1000);
+        return d.toTimeString().split(' ')[0];
+      }
+
+      function pollCertStatus() {
+        fetch("{{ base_path }}/admin/proxy/cert-status")
+          .then(function(r) {
+            if (!r.ok) {
+              throw new Error("HTTP " + r.status);
+            }
+            return r.json();
+          })
+          .then(function(data) {
+            if (!data || data.stage === "Idle") {
+              return;
+            }
+            certCard.style.display = "block";
+            certStageText.textContent = data.stage_text || data.stage;
+
+            if (data.stage === "Success") {
+              certStageBadge.className = "status-badge status-badge-succeeded";
+              certStageBadge.textContent = "申请成功";
+              var statusVal = document.getElementById("cert-status-val");
+              if (statusVal) {
+                statusVal.textContent = "已签发并已安装 (已自动热重载生效)";
+              }
+            } else if (data.stage === "Failed") {
+              certStageBadge.className = "status-badge status-badge-failed";
+              certStageBadge.textContent = "申请失败";
+            } else {
+              certStageBadge.className = "status-badge status-badge-downloading";
+              certStageBadge.textContent = "进行中…";
+            }
+
+            if (data.logs && data.logs.length > 0) {
+              var lines = data.logs.map(function(l) {
+                var prefix = "[" + formatTime(l.timestamp) + "] ";
+                return prefix + l.message;
+              });
+              certLogBox.textContent = lines.join("\n");
+              certLogBox.scrollTop = certLogBox.scrollHeight;
+            }
+
+            if (data.is_running) {
+              if (!certInterval) {
+                certInterval = setInterval(pollCertStatus, 1000);
+              }
+            } else if (certInterval) {
+              clearInterval(certInterval);
+              certInterval = null;
+            }
+          })
+          .catch(function(err) {
+            if (certInterval) {
+              certLogBox.textContent += "\n[警告] 获取状态失败: " + err;
+            }
+          });
+      }
+
+      // 页面初次加载时检查：若已有任务在跑，自动启动轮询
+      pollCertStatus();
+
+      var reqCertForm = document.getElementById("request-cert-form");
+      if (reqCertForm) {
+        reqCertForm.addEventListener("submit", function(e) {
+          e.preventDefault();
+          certCard.style.display = "block";
+          certStageBadge.className = "status-badge status-badge-downloading";
+          certStageBadge.textContent = "已提交申请…";
+          certStageText.textContent = "正在启动后台验证…";
+          certLogBox.textContent = "[准备中] 请求已提交，正在等待调度…";
+
+          var btn = document.getElementById("request-cert-btn");
+          if (btn) btn.disabled = true;
+
+          var urlParams = new URLSearchParams(new FormData(reqCertForm));
+          var csrfInput = reqCertForm.querySelector('input[name="csrf"]');
+          var csrfVal = csrfInput ? csrfInput.value : "";
+
+          fetch(reqCertForm.action, {
+            method: "POST",
+            body: urlParams.toString(),
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "Accept": "application/json",
+              "X-CSRF-Token": csrfVal
+            }
+          })
+          .then(function(res) {
+            if (!res.ok) {
+              return res.text().then(function(t) {
+                throw new Error("HTTP " + res.status + ": " + (t || res.statusText));
+              });
+            }
+            if (!certInterval) {
+              certInterval = setInterval(pollCertStatus, 1000);
+            }
+            pollCertStatus();
+          })
+          .catch(function(err) {
+            certStageBadge.className = "status-badge status-badge-failed";
+            certStageBadge.textContent = "提交失败";
+            certLogBox.textContent += "\n提交失败: " + err.message;
+          })
+          .finally(function() {
+            if (btn) btn.disabled = false;
+          });
+        });
+      }
+    });
+  </script>
+</body>
+</html>

@@ -84,7 +84,7 @@
   <div class="content">
   <header>
     <h1>用户详情与分享</h1>
-    <a href="/admin/clients">返回列表</a>
+    <a href="{{ base_path }}/admin/clients">返回列表</a>
   </header>
   <main>
     {% if let Some(w) = warning %}
@@ -104,9 +104,9 @@
         <button class="btn btn-secondary" type="button" onclick="toggleSubQr()">二维码</button>
       </div>
       <div id="sub-qr-box" class="qr-box" style="display:none;">
-        <img src="{{ sub_qr_path }}" width="220" height="220" alt="Subscription QR">
+        <img src="{{ base_path }}{{ sub_qr_path }}" width="220" height="220" alt="Subscription QR">
         <div style="margin-top:8px;">
-          <a class="btn btn-secondary" href="{{ sub_qr_path }}" download="sub-{{ client.uuid }}.png">下载订阅二维码</a>
+          <a class="btn btn-secondary" href="{{ base_path }}{{ sub_qr_path }}" download="sub-{{ client.uuid }}.png">下载订阅二维码</a>
         </div>
       </div>
     </section>
@@ -129,10 +129,10 @@
         <b>客户端指纹</b> chrome (uTLS)
       </div>
       <div class="actions" style="margin-top:12px;">
-        <form method="post" action="/admin/clients/{{ client.id }}/toggle?redirect=detail" style="display:inline;">
+        <form method="post" action="{{ base_path }}/admin/clients/{{ client.id }}/toggle?redirect=detail" style="display:inline;">
           <button class="btn btn-secondary" type="submit">{% if client.active %}禁用用户{% else %}启用用户{% endif %}</button>
         </form>
-        <a class="btn btn-secondary" href="/admin/clients/{{ client.id }}/edit">编辑用户</a>
+        <a class="btn btn-secondary" href="{{ base_path }}/admin/clients/{{ client.id }}/edit">编辑用户</a>
       </div>
     </section>
 
@@ -156,9 +156,9 @@
         <button class="btn btn-secondary" type="button" onclick="toggleNodeQr({{ node.inbound_id }})">二维码</button>
       </div>
       <div id="node-qr-{{ node.inbound_id }}" class="qr-box" style="display:none;">
-        <img src="{{ node.qr_path }}" width="220" height="220" alt="{{ node.protocol_label }} QR">
+        <img src="{{ base_path }}{{ node.qr_path }}" width="220" height="220" alt="{{ node.protocol_label }} QR">
         <div style="margin-top:8px;">
-          <a class="btn btn-secondary" href="{{ node.qr_path }}" download="{{ node.protocol }}-{{ client.uuid }}.png">下载 PNG</a>
+          <a class="btn btn-secondary" href="{{ base_path }}{{ node.qr_path }}" download="{{ node.protocol }}-{{ client.uuid }}.png">下载 PNG</a>
         </div>
       </div>
     </section>
@@ -167,7 +167,7 @@
     <!-- 兼容原有全局默认 VLESS URI 和 二维码区域 -->
     <section class="card qr-card" style="display:none;">
       <h2>默认二维码</h2>
-      <img src="{{ qr_path }}" width="280" height="280" alt="VLESS QR">
+      <img src="{{ base_path }}{{ qr_path }}" width="280" height="280" alt="VLESS QR">
       <div id="uri">{{ uri }}</div>
     </section>
   </main>

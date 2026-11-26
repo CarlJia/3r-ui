@@ -109,3 +109,8 @@ linux-output:
 	@echo "x86_64:  target/$(TARGET_X64)/release/3r-ui"
 	@echo "arm64:   target/$(TARGET_ARM64)/release/3r-ui"
 	@file target/$(TARGET_X64)/release/3r-ui 2>/dev/null || true
+
+# Fast VPS test deployer: build + scp + remote restart
+.PHONY: deploy-test
+deploy-test:
+	./scripts/deploy-test.sh $(VPS) $(ARCH)

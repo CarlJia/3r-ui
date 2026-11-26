@@ -371,6 +371,8 @@ async fn hy2_share_uri_generation() {
         masquerade_url: "".into(),
         port_range: "".into(),
         transport_protocol: "TCP".into(),
+        skip_cert_verify: 0,
+        udp: 1,
         status: "active".into(),
         created_at: None,
         updated_at: None,
@@ -381,5 +383,16 @@ async fn hy2_share_uri_generation() {
         .starts_with("hysteria2://7c90d0c0-1234-4abc-9def-111122223333@panel.example.com:8443/?"));
     assert!(uri.contains("sni=hy2.example.com"));
     assert!(uri.contains("insecure=0"));
+    assert!(uri.contains("udp=1"));
+    assert!(!uri.contains("skip-cert-verify"));
     assert!(uri.ends_with("#bob-node"));
+
+    // Test with skip_cert_verify=1
+    let mut ib_insecure = inbound.clone();
+    ib_insecure.skip_cert_verify = 1;
+    let uri_insecure =
+        three_r_ui::share::hy2::build_uri(&client, &ib_insecure, "panel.example.com");
+    assert!(uri_insecure.contains("insecure=1"));
+    assert!(!uri_insecure.contains("skip-cert-verify"));
+    assert!(uri_insecure.contains("udp=1"));
 }

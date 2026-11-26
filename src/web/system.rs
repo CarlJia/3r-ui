@@ -58,6 +58,8 @@ pub struct SystemMetrics {
     pub app_panel_mem_formatted: String,
     pub app_xray_mem_bytes: u64,
     pub app_xray_mem_formatted: String,
+    pub app_hy2_mem_bytes: u64,
+    pub app_hy2_mem_formatted: String,
     pub app_mieru_mem_bytes: u64,
     pub app_mieru_mem_formatted: String,
     pub app_total_mem_bytes: u64,
@@ -207,8 +209,22 @@ impl SystemTracker {
             0
         };
 
+        let hy2_pid_file = data_dir.join("hy2.pid");
+        let app_hy2_mem_bytes = if let Ok(content) = std::fs::read_to_string(&hy2_pid_file)
+            .or_else(|_| std::fs::read_to_string(data_dir.join("hysteria.pid")))
+        {
+            if let Ok(hy2_pid) = content.trim().parse::<i32>() {
+                get_process_rss(hy2_pid)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         let app_total_mem_bytes = app_panel_mem_bytes
             .saturating_add(app_xray_mem_bytes)
+            .saturating_add(app_hy2_mem_bytes)
             .saturating_add(app_mieru_mem_bytes);
 
         SystemMetrics {
@@ -245,6 +261,8 @@ impl SystemTracker {
             app_panel_mem_formatted: format_bytes_human(app_panel_mem_bytes),
             app_xray_mem_bytes,
             app_xray_mem_formatted: format_bytes_human(app_xray_mem_bytes),
+            app_hy2_mem_bytes,
+            app_hy2_mem_formatted: format_bytes_human(app_hy2_mem_bytes),
             app_mieru_mem_bytes,
             app_mieru_mem_formatted: format_bytes_human(app_mieru_mem_bytes),
             app_total_mem_bytes,

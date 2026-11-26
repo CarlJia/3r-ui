@@ -94,8 +94,8 @@
   <main>
     <!-- 顶部日志类型选项卡 -->
     <div class="log-tabs">
-      <a href="/admin/logs" class="log-tab tab-inactive">连接访问记录</a>
-      <a href="/admin/logs/xray" class="log-tab active">Xray 运行日志</a>
+      <a href="{{ base_path }}/admin/logs" class="log-tab tab-inactive">连接访问记录</a>
+      <a href="{{ base_path }}/admin/logs/xray" class="log-tab active">Xray 运行日志</a>
     </div>
 
     <section class="card" style="padding: 16px;">
@@ -202,7 +202,7 @@
       }
 
       function fetchLogs() {
-        fetch('/admin/logs/xray/raw?tail=500')
+        fetch('{{ base_path }}/admin/logs/xray/raw?tail=500')
           .then(r => r.json())
           .then(data => {
             if (data && Array.isArray(data.lines)) {

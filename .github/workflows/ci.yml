@@ -10,9 +10,18 @@ on:
     branches:
       - main
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_DEV_STRIP: "debuginfo"
+  CARGO_PROFILE_TEST_STRIP: "debuginfo"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+
 jobs:
-  check-and-test:
-    name: Test & Lint (Ubuntu)
+  lint:
+    name: Lint & Format (Ubuntu)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -22,15 +31,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry & target
-        uses: actions/cache@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-ci-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-ci-${{ runner.os }}-
+          key: clippy-lint
 
       - name: Code formatting check
         run: cargo fmt --check
@@ -38,8 +42,33 @@ jobs:
       - name: Clippy check
         run: cargo clippy --all-targets -- -D warnings
 
+  test:
+    name: Run Tests (Ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install lld linker
+        run: sudo apt-get update && sudo apt-get install -y lld
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cargo-test
+
       - name: Run unit & integration tests
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         run: cargo test
+
+      - name: Prune test binaries to minimize cache size
+        if: always()
+        run: |
+          find target/debug/deps -maxdepth 1 -type f -executable -delete 2>/dev/null || true
+          rm -rf target/debug/incremental 2>/dev/null || true
 
   build-check-cross:
     name: Build check (${{ matrix.target }})
@@ -58,14 +87,10 @@ jobs:
       - name: Install cross
         uses: taiki-e/install-action@cross
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-cross-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-cross-${{ matrix.target }}-
+          key: cargo-cross-${{ matrix.target }}
 
       - name: Cross check for target
         run: cross check --target ${{ matrix.target }}

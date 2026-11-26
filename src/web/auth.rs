@@ -4,7 +4,7 @@
 //! flow and the fact that an authenticated request reaches a rendered page.
 
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
@@ -12,7 +12,9 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use crate::crypto::password;
 use crate::crypto::session::{new_csrf_token, new_session_token, now_unix};
 use crate::db::models::{Admin, Inbound};
-use crate::web::middleware::{csrf_from_cookies, CurrentAdmin, SECURITY_HEADERS};
+use crate::web::middleware::{
+    csrf_from_cookies, BasePath, ClientIp, CurrentAdmin, SECURITY_HEADERS,
+};
 use crate::web::{AppState, CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL_SECS};
 
 #[derive(Template)]
@@ -20,6 +22,7 @@ use crate::web::{AppState, CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL_SECS};
 struct LoginTemplate {
     csrf: String,
     error: Option<String>,
+    base_path: String,
 }
 
 #[derive(Template)]
@@ -34,6 +37,7 @@ struct DashboardTemplate {
     inbound: Option<DashboardInboundView>,
     proxy: Option<DashboardProxyView>,
     system: crate::web::system::SystemMetrics,
+    base_path: String,
 }
 
 struct DashboardInboundView {
@@ -47,19 +51,27 @@ struct DashboardProxyView {
     enabled: bool,
     listen_port: i64,
     domain: String,
+    path: String,
+    full_url: String,
     cert_status: String,
 }
 
 /// `GET /` — the login form. An authenticated visitor is bounced to /admin.
-pub async fn login_page(State(state): State<AppState>, jar: CookieJar) -> Response {
-    if let Some(admin) = current_admin(&state, &jar).await {
-        let _ = admin;
-        return Redirect::to("/admin").into_response();
+pub async fn login_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    base_path_ext: Option<Extension<BasePath>>,
+) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
+    if let Some(_admin) = current_admin(&state, &jar).await {
+        let target = format!("{base_path}/admin");
+        return Redirect::to(&target).into_response();
     }
     let csrf = new_csrf_token();
     let html = LoginTemplate {
         csrf: csrf.clone(),
         error: None,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -80,8 +92,14 @@ pub struct LoginForm {
 pub async fn login_submit(
     State(state): State<AppState>,
     jar: CookieJar,
+    base_path_ext: Option<Extension<BasePath>>,
+    client_ip_ext: Option<Extension<ClientIp>>,
     axum::extract::Form(form): axum::extract::Form<LoginForm>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
+    let client_ip = client_ip_ext
+        .map(|Extension(ip)| ip.0)
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let admin = sqlx::query_as::<_, Admin>(
         "SELECT id, username, password_hash, created_at FROM admins WHERE username = ?",
     )
@@ -96,6 +114,14 @@ pub async fn login_submit(
         .is_some_and(|a| password::verify(&form.password, &a.password_hash));
 
     if !valid {
+        // [SECURITY] 审计日志：输出结构化安全登录失败日志，供 Fail2ban filter.d/3r-ui.conf 精准匹配与封禁
+        tracing::warn!(
+            target: "security",
+            "[SECURITY] Web login failed for user='{}' from ip='{}'",
+            form.username,
+            client_ip
+        );
+
         // Re-render with an error rather than redirecting, so the operator can
         // retry immediately. The generic message avoids disclosing whether the
         // username exists.
@@ -103,6 +129,7 @@ pub async fn login_submit(
         let html = LoginTemplate {
             csrf: csrf.clone(),
             error: Some("用户名或密码错误".to_string()),
+            base_path: base_path.clone(),
         }
         .render()
         .unwrap_or_else(|e| format!("template error: {e}"));
@@ -139,11 +166,17 @@ pub async fn login_submit(
     let jar = jar
         .add(build_cookie(SESSION_COOKIE, &session_id, true))
         .add(build_cookie(CSRF_COOKIE, &csrf, true));
-    redirect_with(jar, "/admin")
+    let target = format!("{base_path}/admin");
+    redirect_with(jar, &target)
 }
 
 /// `POST /admin/logout` — delete the session row and clear both cookies.
-pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
+pub async fn logout(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    base_path_ext: Option<Extension<BasePath>>,
+) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     if let Some(session_id) = jar.get(SESSION_COOKIE).map(|c| c.value().to_string()) {
         let _ = sqlx::query("DELETE FROM sessions WHERE session_id = ?")
             .bind(&session_id)
@@ -153,7 +186,12 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
     let jar = jar
         .remove(removable(SESSION_COOKIE))
         .remove(removable(CSRF_COOKIE));
-    redirect_with(jar, "/")
+    let target = if base_path.is_empty() {
+        "/".to_string()
+    } else {
+        base_path
+    };
+    redirect_with(jar, &target)
 }
 
 #[derive(serde::Deserialize)]
@@ -166,9 +204,11 @@ pub struct PasswordForm {
 pub async fn change_password(
     State(state): State<AppState>,
     axum::Extension(admin): axum::Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
     axum::extract::Form(form): axum::extract::Form<PasswordForm>,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     if !password::verify(&form.current_password, &admin.0.password_hash) {
         return (StatusCode::FORBIDDEN, "当前密码不正确").into_response();
     }
@@ -200,15 +240,22 @@ pub async fn change_password(
     let jar = jar
         .remove(removable(SESSION_COOKIE))
         .remove(removable(CSRF_COOKIE));
-    redirect_with(jar, "/")
+    let target = if base_path.is_empty() {
+        "/".to_string()
+    } else {
+        base_path
+    };
+    redirect_with(jar, &target)
 }
 
 /// `GET /admin` — authenticated landing page with system status summary.
 pub async fn dashboard(
     State(state): State<AppState>,
     axum::Extension(admin): axum::Extension<CurrentAdmin>,
+    base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
 ) -> Response {
+    let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let csrf = csrf_from_cookies(&jar);
 
     // 1. Get xray version and running status
@@ -276,7 +323,7 @@ pub async fn dashboard(
 
     // 3. Inbound info
     let inbound_row = sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, status, created_at, updated_at FROM inbounds LIMIT 1",
+        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at FROM inbounds LIMIT 1",
     )
     .fetch_optional(&state.pool)
     .await
@@ -319,7 +366,9 @@ pub async fn dashboard(
         DashboardProxyView {
             enabled: p.is_enabled(),
             listen_port: p.listen_port,
-            domain: p.domain,
+            domain: p.domain.clone(),
+            path: p.normalized_path(),
+            full_url: p.full_url(),
             cert_status,
         }
     });
@@ -336,6 +385,7 @@ pub async fn dashboard(
         inbound,
         proxy,
         system,
+        base_path,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -390,7 +440,7 @@ fn removable(name: &'static str) -> Cookie<'static> {
 
 /// 303 to `location`, carrying `jar`'s Set-Cookie values so a login or logout
 /// can set and clear cookies in the same response as the redirect.
-fn redirect_with(jar: CookieJar, location: &'static str) -> Response {
+fn redirect_with(jar: CookieJar, location: &str) -> Response {
     let mut response = Redirect::to(location).into_response();
     for cookie in jar.iter() {
         if let Ok(header_value) = cookie.encoded().to_string().parse() {

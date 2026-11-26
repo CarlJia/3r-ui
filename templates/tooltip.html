@@ -1,0 +1,433 @@
+<style>
+  /* ==========================================================
+     统一表格与文本悬浮气泡组件 (Universal Table & Text Tooltip)
+     ========================================================== */
+  .ui-floating-tooltip {
+    position: fixed;
+    z-index: 99999;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(4px) scale(0.98);
+    transition: opacity 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+                transform 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+                visibility 0.15s;
+    background: #1e2126;
+    color: #f8fafc;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    padding: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.2);
+    max-width: 500px;
+    min-width: 180px;
+    box-sizing: border-box;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  /* 仅在显示时允许鼠标交互，隐藏时不阻挡下层点击 */
+  .ui-floating-tooltip.is-visible {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
+  /* 桥接伪元素：在 target 与 tooltip 之间的 8px 空隙填补鼠标悬停，防止移入时断连 */
+  .ui-floating-tooltip::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 14px;
+    pointer-events: auto;
+  }
+  .ui-floating-tooltip[data-placement="top"]::before {
+    bottom: -14px;
+  }
+  .ui-floating-tooltip[data-placement="bottom"]::before {
+    top: -14px;
+  }
+
+  /* 主题自适应 */
+  html[data-theme="light"] .ui-floating-tooltip,
+  :root:not([data-theme="dark"]) .ui-floating-tooltip {
+    background: #1f2328;
+    color: #ffffff;
+    border-color: rgba(0, 0, 0, 0.2);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.15);
+  }
+
+  html[data-theme="dark"] .ui-floating-tooltip {
+    background: #25282e;
+    color: #f1f5f9;
+    border-color: #383e4a;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.48), 0 3px 10px rgba(0, 0, 0, 0.32);
+  }
+
+  /* 气泡小箭头 */
+  .ui-floating-tooltip-arrow {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: inherit;
+    border: inherit;
+    transform: rotate(45deg);
+    pointer-events: none;
+  }
+
+  .ui-floating-tooltip[data-placement="top"] .ui-floating-tooltip-arrow {
+    bottom: -5px;
+    border-top: none;
+    border-left: none;
+  }
+
+  .ui-floating-tooltip[data-placement="bottom"] .ui-floating-tooltip-arrow {
+    top: -5px;
+    border-bottom: none;
+    border-right: none;
+  }
+
+  /* 气泡顶部操作栏 */
+  .ui-floating-tooltip-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px 8px 0 0;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  html[data-theme="dark"] .ui-floating-tooltip-header {
+    background: rgba(0, 0, 0, 0.18);
+    border-bottom-color: #383e4a;
+  }
+  .ui-floating-tooltip-title {
+    opacity: 0.7;
+    font-size: 11px;
+    user-select: none;
+  }
+
+  /* 复制按钮 */
+  .ui-tooltip-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+    color: #f1f5f9;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    user-select: none;
+  }
+  .ui-tooltip-copy-btn:hover {
+    background: #3b82f6;
+    border-color: #3b82f6;
+    color: #ffffff;
+  }
+  .ui-tooltip-copy-btn.copied {
+    background: #10b981 !important;
+    border-color: #10b981 !important;
+    color: #ffffff !important;
+  }
+
+  /* 气泡内容主体 */
+  .ui-floating-tooltip-content {
+    padding: 8px 12px;
+    max-height: 240px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    word-break: break-all;
+    white-space: pre-wrap;
+    box-sizing: border-box;
+    cursor: text;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  /* 统一表格省略号与截断样式 */
+  .table-truncate {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  [data-tooltip],
+  .detail-preview,
+  .table-truncate {
+    cursor: default;
+  }
+</style>
+
+<div id="ui-floating-tooltip" class="ui-floating-tooltip" role="tooltip" aria-hidden="true">
+  <div class="ui-floating-tooltip-header">
+    <span class="ui-floating-tooltip-title">完整内容详情</span>
+    <button type="button" id="ui-floating-tooltip-copy" class="ui-tooltip-copy-btn" title="点击一键复制完整文本">
+      <span class="copy-icon">📋</span>
+      <span id="ui-floating-tooltip-copy-text">复制</span>
+    </button>
+  </div>
+  <div id="ui-floating-tooltip-content" class="ui-floating-tooltip-content"></div>
+  <div id="ui-floating-tooltip-arrow" class="ui-floating-tooltip-arrow"></div>
+</div>
+
+<script>
+  (function () {
+    var tooltip = document.getElementById('ui-floating-tooltip');
+    var contentEl = document.getElementById('ui-floating-tooltip-content');
+    var arrowEl = document.getElementById('ui-floating-tooltip-arrow');
+    var copyBtn = document.getElementById('ui-floating-tooltip-copy');
+    var copyText = document.getElementById('ui-floating-tooltip-copy-text');
+    if (!tooltip || !contentEl || !arrowEl || !copyBtn) return;
+
+    var currentTarget = null;
+    var showTimer = null;
+    var hideTimer = null;
+    var isOverTarget = false;
+    var isOverTooltip = false;
+
+    function getTooltipText(el) {
+      if (!el || el.nodeType !== 1) return '';
+
+      // 1. 显式 data-tooltip 或 data-full-text
+      var explicit = el.getAttribute('data-tooltip') || el.getAttribute('data-full-text');
+      if (explicit && explicit.trim()) return explicit.trim();
+
+      // 2. 原生 title 属性：转存并移除，消除浏览器自带黄黑底框冲突
+      var title = el.getAttribute('title');
+      if (title && title.trim()) {
+        el.setAttribute('data-tooltip', title.trim());
+        el.removeAttribute('title');
+        return title.trim();
+      }
+
+      // 3. 判断是否发生了文字溢出截断 (scrollWidth > clientWidth)
+      if (el.scrollWidth > (el.clientWidth + 1)) {
+        var text = (el.innerText || el.textContent || '').trim();
+        if (text) return text;
+      }
+
+      return '';
+    }
+
+    function findTarget(el) {
+      var curr = el;
+      while (curr && curr !== document.body && curr !== document.documentElement) {
+        if (curr === tooltip || tooltip.contains(curr)) {
+          return null;
+        }
+        if (curr.getAttribute('data-tooltip') || curr.getAttribute('title')) {
+          return curr;
+        }
+        if (curr.classList && (
+            curr.classList.contains('detail-preview') ||
+            curr.classList.contains('table-truncate') ||
+            curr.classList.contains('truncate-cell') ||
+            curr.classList.contains('uuid') ||
+            curr.classList.contains('status-message-text')
+        )) {
+          return curr;
+        }
+        if ((curr.tagName === 'TD' || curr.tagName === 'TH' || curr.closest('table')) && curr.scrollWidth > (curr.clientWidth + 1)) {
+          return curr;
+        }
+        curr = curr.parentElement;
+      }
+      return null;
+    }
+
+    function positionTooltip(target) {
+      var rect = target.getBoundingClientRect();
+      var tooltipRect = tooltip.getBoundingClientRect();
+
+      var margin = 8;
+      var placement = 'top';
+
+      var top = rect.top - tooltipRect.height - margin;
+      if (top < 10) {
+        top = rect.bottom + margin;
+        placement = 'bottom';
+      }
+
+      var targetCenter = rect.left + rect.width / 2;
+      var left = targetCenter - tooltipRect.width / 2;
+      var minLeft = 10;
+      var maxLeft = window.innerWidth - tooltipRect.width - 10;
+
+      if (left < minLeft) left = minLeft;
+      if (left > maxLeft) left = maxLeft;
+
+      var arrowLeft = targetCenter - left - 4;
+      if (arrowLeft < 8) arrowLeft = 8;
+      if (arrowLeft > tooltipRect.width - 16) arrowLeft = tooltipRect.width - 16;
+
+      tooltip.setAttribute('data-placement', placement);
+      tooltip.style.top = Math.round(top) + 'px';
+      tooltip.style.left = Math.round(left) + 'px';
+      arrowEl.style.left = Math.round(arrowLeft) + 'px';
+    }
+
+    function show(target) {
+      clearTimeout(hideTimer);
+      clearTimeout(showTimer);
+      isOverTarget = true;
+
+      var text = getTooltipText(target);
+      if (!text) {
+        scheduleHide();
+        return;
+      }
+
+      var visibleText = (target.innerText || target.textContent || '').trim();
+      // 如果没有显式 data-tooltip，且当前文本未发生溢出且没有被省略号截断，则无需重复弹窗
+      if (!target.getAttribute('data-tooltip') && text === visibleText && target.scrollWidth <= target.clientWidth && !visibleText.endsWith('…') && !visibleText.endsWith('...')) {
+        scheduleHide();
+        return;
+      }
+
+      showTimer = setTimeout(function () {
+        currentTarget = target;
+        contentEl.textContent = text;
+
+        // 根据内容类型切换等宽字体
+        if (target.classList.contains('uuid') || target.classList.contains('detail-preview') || target.tagName === 'CODE') {
+          contentEl.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+          contentEl.style.fontSize = '11px';
+        } else {
+          contentEl.style.fontFamily = '';
+          contentEl.style.fontSize = '';
+        }
+
+        // 重置复制按钮状态
+        copyBtn.classList.remove('copied');
+        if (copyText) copyText.textContent = '复制';
+
+        tooltip.classList.add('is-visible');
+        tooltip.setAttribute('aria-hidden', 'false');
+        positionTooltip(target);
+      }, 50);
+    }
+
+    function scheduleHide() {
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(function () {
+        if (!isOverTarget && !isOverTooltip) {
+          hide();
+        }
+      }, 220);
+    }
+
+    function hide() {
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      currentTarget = null;
+      isOverTarget = false;
+      isOverTooltip = false;
+      tooltip.classList.remove('is-visible');
+      tooltip.setAttribute('aria-hidden', 'true');
+    }
+
+    // 复制功能实现
+    function copyTooltipContent() {
+      var text = contentEl.textContent || '';
+      if (!text) return;
+
+      function onCopied() {
+        copyBtn.classList.add('copied');
+        if (copyText) copyText.textContent = '已复制 ✓';
+        setTimeout(function () {
+          copyBtn.classList.remove('copied');
+          if (copyText) copyText.textContent = '复制';
+        }, 1500);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(onCopied).catch(function () {
+          fallbackCopy(text, onCopied);
+        });
+      } else {
+        fallbackCopy(text, onCopied);
+      }
+    }
+
+    function fallbackCopy(text, cb) {
+      try {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (cb) cb();
+      } catch (err) {
+        console.error('Fallback copy failed', err);
+      }
+    }
+
+    copyBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      copyTooltipContent();
+    });
+
+    // 鼠标移入/移出气泡本体时的防抖与停留保持
+    tooltip.addEventListener('mouseenter', function () {
+      isOverTooltip = true;
+      clearTimeout(hideTimer);
+    });
+
+    tooltip.addEventListener('mouseleave', function () {
+      isOverTooltip = false;
+      scheduleHide();
+    });
+
+    // 委托监听表格及文本 target
+    document.addEventListener('mouseover', function (e) {
+      if (tooltip.contains(e.target)) return;
+      var target = findTarget(e.target);
+      if (target) {
+        show(target);
+      } else if (currentTarget && !currentTarget.contains(e.target)) {
+        isOverTarget = false;
+        scheduleHide();
+      }
+    }, true);
+
+    document.addEventListener('mouseout', function (e) {
+      if (tooltip.contains(e.target)) return;
+      if (currentTarget && (!e.relatedTarget || !currentTarget.contains(e.relatedTarget))) {
+        isOverTarget = false;
+        scheduleHide();
+      }
+    }, true);
+
+    // 点击外部区域或滚动时关闭
+    document.addEventListener('mousedown', function (e) {
+      if (currentTarget && !currentTarget.contains(e.target) && !tooltip.contains(e.target)) {
+        hide();
+      }
+    }, true);
+
+    window.addEventListener('scroll', function () {
+      if (currentTarget && !isOverTooltip) hide();
+    }, { passive: true });
+
+    window.addEventListener('resize', function () {
+      if (currentTarget) hide();
+    }, { passive: true });
+  })();
+</script>

@@ -77,6 +77,21 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/logs", get(logs::list))
         .route("/admin/logs/xray", get(logs::xray_logs_page))
         .route("/admin/logs/xray/raw", get(logs::xray_logs_raw))
+        .route("/admin/proxy", get(settings::proxy_page))
+        .route("/admin/proxy", post(settings::save_proxy_settings))
+        .route(
+            "/admin/proxy/request-cert",
+            post(settings::request_cert_now),
+        )
+        .route(
+            "/admin/proxy/cert-status",
+            get(settings::cert_request_status),
+        )
+        .route("/admin/proxy/certs", get(settings::certs_dir_json))
+        .route(
+            "/admin/proxy/certs/download",
+            get(settings::cert_file_download),
+        )
         .route("/admin/settings", get(settings::settings_page))
         .route("/admin/settings/proxy", post(settings::save_proxy_settings))
         .route(
@@ -97,6 +112,22 @@ pub fn router(state: AppState) -> Router {
             post(settings::trigger_update),
         )
         .route("/admin/settings/xray/status", get(settings::update_status))
+        .route(
+            "/admin/settings/security",
+            post(settings::save_security_settings),
+        )
+        .route(
+            "/admin/settings/fail2ban/status",
+            get(settings::fail2ban_status_api),
+        )
+        .route(
+            "/admin/settings/fail2ban/unban",
+            post(settings::fail2ban_unban_api),
+        )
+        .route(
+            "/admin/settings/fail2ban/install",
+            post(settings::fail2ban_install_api),
+        )
         .route("/admin/api/system-status", get(system::system_status_api))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -106,6 +137,10 @@ pub fn router(state: AppState) -> Router {
     public
         .merge(admin)
         .fallback(auth::not_found)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::base_path_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

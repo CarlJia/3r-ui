@@ -227,7 +227,36 @@ async fn multi_protocol_inbound_and_client_binding() {
     .unwrap();
 
     assert!(decoded.contains("hysteria2://"));
+    assert!(decoded.contains("insecure=0"));
+    assert!(decoded.contains("udp=1"));
     assert!(!decoded.contains("vless://"));
+
+    // 6b. Update Hy2 Inbound to skip_cert_verify=1 and check subscription updates
+    let resp = post(
+        &h,
+        &format!("/admin/inbound/{hy2_id}"),
+        &session,
+        &csrf,
+        &format!("id={hy2_id}&protocol=hysteria2&listen_port=8443&sni=hy2.example.com&cert_mode=auto&skip_cert_verify=1&udp=1&masquerade_url=https://news.ycombinator.com/"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let req = Request::builder()
+        .uri(format!("/sub/{sub_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let sub_resp = h.app.clone().oneshot(req).await.unwrap();
+    let raw_b64 = body_text(sub_resp).await;
+    let decoded = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(raw_b64.trim())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(decoded.contains("insecure=1"));
+    assert!(!decoded.contains("skip-cert-verify"));
+    assert!(decoded.contains("udp=1"));
 
     // 7. Update Client to bind to BOTH inbounds
     let resp = post(

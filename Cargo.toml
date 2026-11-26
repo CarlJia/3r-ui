@@ -49,6 +49,7 @@ x509-parser = "0.16"
 pingora-core = { version = "0.9", features = ["openssl"] }
 pingora-proxy = { version = "0.9", features = ["openssl"] }
 pingora-http = "0.9"
+http = "1"
 async-trait = "0.1"
 
 [dev-dependencies]
@@ -63,6 +64,14 @@ http-body-util = "0.1"
 [build-dependencies]
 tonic-build = { version = "0.12", features = ["prost"] }
 protoc-bin-vendored = "3"
+
+[profile.dev]
+debug = 0
+strip = "debuginfo"
+
+[profile.test]
+debug = 0
+strip = "debuginfo"
 
 [profile.release]
 opt-level = 3

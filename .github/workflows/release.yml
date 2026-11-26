@@ -9,6 +9,15 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_DEV_STRIP: "debuginfo"
+  CARGO_PROFILE_TEST_STRIP: "debuginfo"
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+
 jobs:
   test-and-lint:
     name: Run Tests & Checks
@@ -21,15 +30,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: actions/cache@v6
+      - name: Install lld linker
+        run: sudo apt-get update && sudo apt-get install -y lld
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-test-${{ runner.os }}-
+          key: cargo-test
 
       - name: Lint & Clippy
         run: |
@@ -37,7 +44,15 @@ jobs:
           cargo clippy --all-targets -- -D warnings
 
       - name: Tests
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         run: cargo test
+
+      - name: Prune test binaries to minimize cache size
+        if: always()
+        run: |
+          find target/debug/deps -maxdepth 1 -type f -executable -delete 2>/dev/null || true
+          rm -rf target/debug/incremental 2>/dev/null || true
 
   build-linux:
     name: Build Linux (${{ matrix.target }})
@@ -59,14 +74,10 @@ jobs:
       - name: Install cross
         uses: taiki-e/install-action@cross
 
-      - name: Cache cargo registry
-        uses: actions/cache@v6
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-${{ matrix.target }}-
+          key: cargo-release-${{ matrix.target }}
 
       - name: Build release binary with cross
         run: cross build --release --target ${{ matrix.target }}
