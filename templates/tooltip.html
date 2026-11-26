@@ -1,0 +1,254 @@
+<style>
+  /* ==========================================================
+     统一表格与文本悬浮气泡组件 (Universal Table & Text Tooltip)
+     ========================================================== */
+  .ui-floating-tooltip {
+    position: fixed;
+    z-index: 99999;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(4px) scale(0.98);
+    transition: opacity 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+                transform 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+                visibility 0.15s;
+    background: #1e2126;
+    color: #f8fafc;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.18);
+    max-width: 480px;
+    max-height: 280px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    word-break: break-all;
+    white-space: pre-wrap;
+    box-sizing: border-box;
+  }
+
+  html[data-theme="light"] .ui-floating-tooltip,
+  :root:not([data-theme="dark"]) .ui-floating-tooltip {
+    background: #1f2328;
+    color: #ffffff;
+    border-color: rgba(0, 0, 0, 0.2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), 0 2px 8px rgba(0, 0, 0, 0.12);
+  }
+
+  html[data-theme="dark"] .ui-floating-tooltip {
+    background: #25282e;
+    color: #f1f5f9;
+    border-color: #383e4a;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .ui-floating-tooltip.is-visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0) scale(1);
+  }
+
+  .ui-floating-tooltip-arrow {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: inherit;
+    border: inherit;
+    transform: rotate(45deg);
+    pointer-events: none;
+  }
+
+  .ui-floating-tooltip[data-placement="top"] .ui-floating-tooltip-arrow {
+    bottom: -5px;
+    border-top: none;
+    border-left: none;
+  }
+
+  .ui-floating-tooltip[data-placement="bottom"] .ui-floating-tooltip-arrow {
+    top: -5px;
+    border-bottom: none;
+    border-right: none;
+  }
+
+  /* 统一表格省略号与截断样式 */
+  .table-truncate {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  [data-tooltip],
+  .detail-preview,
+  .table-truncate {
+    cursor: default;
+  }
+</style>
+
+<div id="ui-floating-tooltip" class="ui-floating-tooltip" role="tooltip" aria-hidden="true">
+  <div id="ui-floating-tooltip-content"></div>
+  <div id="ui-floating-tooltip-arrow" class="ui-floating-tooltip-arrow"></div>
+</div>
+
+<script>
+  (function () {
+    var tooltip = document.getElementById('ui-floating-tooltip');
+    var contentEl = document.getElementById('ui-floating-tooltip-content');
+    var arrowEl = document.getElementById('ui-floating-tooltip-arrow');
+    if (!tooltip || !contentEl || !arrowEl) return;
+
+    var currentTarget = null;
+    var showTimer = null;
+    var hideTimer = null;
+
+    function getTooltipText(el) {
+      if (!el || el.nodeType !== 1) return '';
+
+      // 1. 显式 data-tooltip 或 data-full-text
+      var explicit = el.getAttribute('data-tooltip') || el.getAttribute('data-full-text');
+      if (explicit && explicit.trim()) return explicit.trim();
+
+      // 2. 原生 title 属性：转存并移除，消除浏览器自带黄黑底框冲突
+      var title = el.getAttribute('title');
+      if (title && title.trim()) {
+        el.setAttribute('data-tooltip', title.trim());
+        el.removeAttribute('title');
+        return title.trim();
+      }
+
+      // 3. 判断是否发生了文字溢出截断 (scrollWidth > clientWidth)
+      if (el.scrollWidth > (el.clientWidth + 1)) {
+        var text = (el.innerText || el.textContent || '').trim();
+        if (text) return text;
+      }
+
+      return '';
+    }
+
+    function findTarget(el) {
+      var curr = el;
+      while (curr && curr !== document.body && curr !== document.documentElement) {
+        if (curr.getAttribute('data-tooltip') || curr.getAttribute('title')) {
+          return curr;
+        }
+        if (curr.classList && (
+            curr.classList.contains('detail-preview') ||
+            curr.classList.contains('table-truncate') ||
+            curr.classList.contains('truncate-cell') ||
+            curr.classList.contains('uuid') ||
+            curr.classList.contains('status-message-text')
+        )) {
+          return curr;
+        }
+        if ((curr.tagName === 'TD' || curr.tagName === 'TH' || curr.closest('table')) && curr.scrollWidth > (curr.clientWidth + 1)) {
+          return curr;
+        }
+        curr = curr.parentElement;
+      }
+      return null;
+    }
+
+    function positionTooltip(target) {
+      var rect = target.getBoundingClientRect();
+      var tooltipRect = tooltip.getBoundingClientRect();
+
+      var margin = 8;
+      var placement = 'top';
+
+      var top = rect.top - tooltipRect.height - margin;
+      if (top < 10) {
+        top = rect.bottom + margin;
+        placement = 'bottom';
+      }
+
+      var targetCenter = rect.left + rect.width / 2;
+      var left = targetCenter - tooltipRect.width / 2;
+      var minLeft = 10;
+      var maxLeft = window.innerWidth - tooltipRect.width - 10;
+
+      if (left < minLeft) left = minLeft;
+      if (left > maxLeft) left = maxLeft;
+
+      var arrowLeft = targetCenter - left - 4;
+      if (arrowLeft < 8) arrowLeft = 8;
+      if (arrowLeft > tooltipRect.width - 16) arrowLeft = tooltipRect.width - 16;
+
+      tooltip.setAttribute('data-placement', placement);
+      tooltip.style.top = Math.round(top) + 'px';
+      tooltip.style.left = Math.round(left) + 'px';
+      arrowEl.style.left = Math.round(arrowLeft) + 'px';
+    }
+
+    function show(target) {
+      clearTimeout(hideTimer);
+      clearTimeout(showTimer);
+
+      var text = getTooltipText(target);
+      if (!text) {
+        hide();
+        return;
+      }
+
+      var visibleText = (target.innerText || target.textContent || '').trim();
+      // 如果没有显式 data-tooltip，且当前文本未发生溢出且没有被省略号截断，则无需重复弹窗
+      if (!target.getAttribute('data-tooltip') && text === visibleText && target.scrollWidth <= target.clientWidth && !visibleText.endsWith('…') && !visibleText.endsWith('...')) {
+        hide();
+        return;
+      }
+
+      showTimer = setTimeout(function () {
+        currentTarget = target;
+        contentEl.textContent = text;
+
+        // 根据内容类型切换等宽字体
+        if (target.classList.contains('uuid') || target.classList.contains('detail-preview') || target.tagName === 'CODE') {
+          contentEl.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+          contentEl.style.fontSize = '11px';
+        } else {
+          contentEl.style.fontFamily = '';
+          contentEl.style.fontSize = '';
+        }
+
+        tooltip.classList.add('is-visible');
+        tooltip.setAttribute('aria-hidden', 'false');
+        positionTooltip(target);
+      }, 60);
+    }
+
+    function hide() {
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      currentTarget = null;
+      tooltip.classList.remove('is-visible');
+      tooltip.setAttribute('aria-hidden', 'true');
+    }
+
+    document.addEventListener('mouseover', function (e) {
+      var target = findTarget(e.target);
+      if (target) {
+        show(target);
+      } else if (currentTarget && !currentTarget.contains(e.target)) {
+        hide();
+      }
+    }, true);
+
+    document.addEventListener('mouseout', function (e) {
+      if (currentTarget && (!e.relatedTarget || !currentTarget.contains(e.relatedTarget))) {
+        hide();
+      }
+    }, true);
+
+    window.addEventListener('scroll', function () {
+      if (currentTarget) hide();
+    }, { passive: true });
+
+    window.addEventListener('resize', function () {
+      if (currentTarget) hide();
+    }, { passive: true });
+  })();
+</script>

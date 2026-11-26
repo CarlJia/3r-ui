@@ -50,9 +50,9 @@
       background: #fdecec; border: 1px solid #f5c2c2; color: #a4262c;
       border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 16px;
     }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
     th, td { padding: 12px 10px; border-bottom: 1px solid #e3e6ea; text-align: left; vertical-align: middle; }
-    th { font-size: 12px; opacity: .7; font-weight: 600; }
+    th { font-size: 12px; opacity: .7; font-weight: 600; white-space: nowrap; }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
     .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
     .badge-vless { background: #eff6ff; color: #2563eb; }
@@ -113,14 +113,20 @@
               {% endif %}
             </td>
             <td><code>{% if !ib.port_range.is_empty() %}{{ ib.port_range }}{% else %}{{ ib.listen_port }}{% endif %}</code></td>
-            <td><code>{% if ib.sni.is_empty() %}-{% else %}{{ ib.sni }}{% endif %}</code></td>
+            <td><code>{% if ib.sni.is_empty() %}-{% else %}<span class="table-truncate" style="max-width: 150px;" data-tooltip="{{ ib.sni }}" title="{{ ib.sni }}">{{ ib.sni }}</span>{% endif %}</code></td>
             <td style="font-size: 12px; opacity: .85;">
               {% if ib.protocol == "hysteria2" %}
-              QUIC · 证书: {{ ib.cert_mode }}{% if ib.skip_cert_verify %} (跳过校验){% endif %} · UDP: {% if ib.udp %}开启{% else %}关闭{% endif %} · 伪装: {{ ib.masquerade_url }}
+              <span class="table-truncate" style="max-width: 360px;" data-tooltip="QUIC · 证书: {{ ib.cert_mode }}{% if ib.skip_cert_verify %} (跳过校验){% endif %} · UDP: {% if ib.udp %}开启{% else %}关闭{% endif %} · 伪装: {{ ib.masquerade_url }}" title="QUIC · 证书: {{ ib.cert_mode }}{% if ib.skip_cert_verify %} (跳过校验){% endif %} · UDP: {% if ib.udp %}开启{% else %}关闭{% endif %} · 伪装: {{ ib.masquerade_url }}">
+                QUIC · 证书: {{ ib.cert_mode }}{% if ib.skip_cert_verify %} (跳过校验){% endif %} · UDP: {% if ib.udp %}开启{% else %}关闭{% endif %} · 伪装: {{ ib.masquerade_url }}
+              </span>
               {% else if ib.protocol == "mieru" %}
-              Mieru · {{ ib.transport_protocol }} · 动态混淆加盐 (免证书)
+              <span class="table-truncate" style="max-width: 360px;" data-tooltip="Mieru · {{ ib.transport_protocol }} · 动态混淆加盐 (免证书)" title="Mieru · {{ ib.transport_protocol }} · 动态混淆加盐 (免证书)">
+                Mieru · {{ ib.transport_protocol }} · 动态混淆加盐 (免证书)
+              </span>
               {% else %}
-              REALITY ({{ ib.dest }}) · <code>{{ ib.xhttp_path }}</code>
+              <span class="table-truncate" style="max-width: 360px;" data-tooltip="REALITY ({{ ib.dest }}) · {{ ib.xhttp_path }}" title="REALITY ({{ ib.dest }}) · {{ ib.xhttp_path }}">
+                REALITY ({{ ib.dest }}) · <code>{{ ib.xhttp_path }}</code>
+              </span>
               {% endif %}
             </td>
             <td>

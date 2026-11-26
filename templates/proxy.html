@@ -285,7 +285,7 @@
               <tbody>
                 {% for file in group.files %}
                 <tr style="border-bottom: 1px solid rgba(0,0,0,0.05);">
-                  <td style="padding: 6px 8px;"><code>{{ file.name }}</code></td>
+                  <td style="padding: 6px 8px;"><code class="table-truncate" style="max-width: 220px;" data-tooltip="{{ file.name }}" title="{{ file.name }}">{{ file.name }}</code></td>
                   <td style="padding: 6px 8px;">{{ file.file_type }}</td>
                   <td style="padding: 6px 8px;">{{ file.size_formatted }}</td>
                   <td style="padding: 6px 8px;"><code>{{ file.permissions }}</code></td>

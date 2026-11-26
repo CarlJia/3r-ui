@@ -78,20 +78,20 @@
       border-radius: 8px; cursor: pointer; background: #3b82f6; color: #fff;
     }
     .empty { font-size: 13px; opacity: .6; padding: 12px 0; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 840px; }
     th, td {
       text-align: left; padding: 8px 10px; border-bottom: 1px solid #eceef1;
       vertical-align: middle;
     }
-    th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase; }
+    th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
     .uuid {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px; background: #f4f5f7; padding: 2px 6px;
-      border-radius: 4px; display: inline-block;
+      border-radius: 4px; display: inline-block; white-space: nowrap;
     }
     .status {
       display: inline-block; padding: 2px 8px; border-radius: 999px;
-      font-size: 11px; font-weight: 600;
+      font-size: 11px; font-weight: 600; white-space: nowrap;
     }
     .status-accepted { background: #e3f5e9; color: #1a7f42; }
     .status-rejected { background: #fdecec; color: #a4262c; }
@@ -176,29 +176,29 @@
       <table>
         <thead>
           <tr>
-            <th>时间</th>
-            <th>UUID</th>
-            <th>来源</th>
-            <th>目标</th>
-            <th>结果</th>
-            <th>详情</th>
+            <th style="width: 150px; white-space: nowrap;">时间</th>
+            <th style="width: 100px; white-space: nowrap;">UUID</th>
+            <th style="min-width: 110px; white-space: nowrap;">来源</th>
+            <th style="min-width: 120px; white-space: nowrap;">目标</th>
+            <th style="min-width: 90px; width: 100px; white-space: nowrap;">结果</th>
+            <th style="min-width: 220px;">详情</th>
           </tr>
         </thead>
         <tbody>
           {% for e in entries %}
           <tr>
-            <td>{{ e.logged_at_iso }}</td>
-            <td>{% if e.uuid_preview.is_empty() %}<span class="muted">未知</span>{% else %}<span class="uuid">{{ e.uuid_preview }}…</span>{% endif %}</td>
-            <td>{% match e.src_addr %}{% when Some with (s) %}{{ s }}{% when None %}<span class="muted">—</span>{% endmatch %}</td>
-            <td>{% match e.dest %}{% when Some with (d) %}{{ d }}{% when None %}<span class="muted">—</span>{% endmatch %}</td>
-            <td>
+            <td style="white-space: nowrap;">{{ e.logged_at_iso }}</td>
+            <td style="white-space: nowrap;">{% if e.uuid_preview.is_empty() %}<span class="muted">未知</span>{% else %}<span class="uuid"{% if e.uuid.len() > 8 %} data-tooltip="{{ e.uuid }}"{% endif %}>{{ e.uuid_preview }}…</span>{% endif %}</td>
+            <td>{% match e.src_addr %}{% when Some with (s) %}<span class="table-truncate" style="max-width: 160px;" data-tooltip="{{ s }}" title="{{ s }}">{{ s }}</span>{% when None %}<span class="muted">—</span>{% endmatch %}</td>
+            <td>{% match e.dest %}{% when Some with (d) %}<span class="table-truncate" style="max-width: 180px;" data-tooltip="{{ d }}" title="{{ d }}">{{ d }}</span>{% when None %}<span class="muted">—</span>{% endmatch %}</td>
+            <td style="white-space: nowrap;">
               <span class="status {% if e.status == "accepted" %}status-accepted{% else %}status-rejected{% endif %}">
                 {% if e.status == "accepted" %}已接受{% else %}已拒绝{% endif %}
               </span>
-              {% match e.reason %}{% when Some with (r) %}<span class="muted" style="margin-left:6px">{{ r }}</span>{% when None %}{% endmatch %}
+              {% match e.reason %}{% when Some with (r) %}<span class="muted" style="margin-left:6px; white-space: nowrap;">{{ r }}</span>{% when None %}{% endmatch %}
             </td>
             <td>
-              <span class="detail-preview" title="{{ e.raw_message }}">{{ e.detail_preview }}</span>
+              <span class="detail-preview" data-tooltip="{{ e.raw_message }}" title="{{ e.raw_message }}">{{ e.detail_preview }}</span>
             </td>
           </tr>
           {% endfor %}

@@ -37,6 +37,7 @@ pub struct LogsFilters {
 #[derive(Debug, Clone)]
 pub struct LogRowView {
     pub logged_at_iso: String,
+    pub uuid: String,
     /// 前 8 字符预览（多字节安全：不足或含多字节字符时退回完整值）。
     pub uuid_preview: String,
     pub src_addr: Option<String>,
@@ -92,9 +93,11 @@ pub async fn list(
         .map(|row| {
             // 先算 preview 再 move raw_message，省一次 String clone。
             let detail_preview = truncate_preview(&row.raw_message, 60);
+            let uuid_preview = row.uuid.get(..8).unwrap_or(&row.uuid).to_string();
             LogRowView {
                 logged_at_iso: timestamp_to_iso(row.logged_at),
-                uuid_preview: row.uuid.get(..8).unwrap_or(&row.uuid).to_string(),
+                uuid: row.uuid,
+                uuid_preview,
                 src_addr: row.src_addr,
                 dest: row.dest,
                 status: row.status,
