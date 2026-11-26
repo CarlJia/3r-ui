@@ -10,6 +10,10 @@
 - [快速安装与部署](#快速安装与部署)
   - [方式一：VPS 终端一键安装 (推荐)](#方式一vps-终端一键安装-推荐)
   - [方式二：本地一键远程批量部署 VPS](#方式二本地一键远程批量部署-vps)
+- [版本更新与升级](#版本更新与升级)
+  - [方式一：一键自动无损升级 (推荐)](#方式一一键自动无损升级-推荐)
+  - [方式二：指定本地二进制文件升级](#方式二指定本地二进制文件升级)
+  - [方式三：本地脚本远程批量升级](#方式三本地脚本远程批量升级)
 - [初次登录与访问配置](#初次登录与访问配置)
   - [1. 查看初始管理员密码](#1-查看初始管理员密码)
   - [2. 开放公网浏览器访问 (修改监听地址)](#2-开放公网浏览器访问-修改监听地址)
@@ -67,6 +71,34 @@ bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging
    ```bash
    ./scripts/deploy.sh
    ```
+
+---
+
+## 版本更新与升级
+
+### 方式一：一键自动无损升级 (推荐)
+
+在 VPS 终端直接再次运行一键安装脚本，系统会自动获取 GitHub 最新 Release 发布的对应架构二进制文件并完成热替换。升级过程**自动保留**现有的环境配置（`/etc/3r-ui/3r-ui.env`）、数据库及所有节点与用户数据（`/var/lib/3r-ui/3r-ui.db`）和 TLS 证书，并自动执行最新的数据库版本迁移：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh)
+```
+
+### 方式二：指定本地二进制文件升级
+
+若您自行编译了最新二进制文件或下载了指定架构的构建包，上传至 VPS（例如 `/root/3r-ui-x86_64-unknown-linux-musl`）后可直接指定路径升级：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/CarlJia/3r-ui/main/packaging/install.sh) -s /root/3r-ui-x86_64-unknown-linux-musl
+```
+
+### 方式三：本地脚本远程批量升级
+
+使用本地 `scripts/deploy.sh` 脚本可一键将本地编译好的最新 release 二进制分发并自动重启多台远程 VPS：
+
+```bash
+./scripts/deploy.sh
+```
 
 ---
 
