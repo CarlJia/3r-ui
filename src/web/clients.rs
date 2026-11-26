@@ -482,13 +482,17 @@ pub async fn detail(
     let proxy_settings = crate::proxy::config::get_proxy_settings(&state.pool)
         .await
         .ok();
-    let sub_path = proxy_settings
-        .as_ref()
-        .map(|p| p.normalized_sub_path())
-        .unwrap_or_else(|| "/sub".to_string());
-
     let sub_token = client.sub_token.clone().unwrap_or_default();
-    let sub_url = format!("{sub_scheme}://{host}{sub_path}/{sub_token}");
+    let sub_url = if let Some(ref p) = proxy_settings {
+        if p.is_enabled() && !p.domain.is_empty() {
+            p.full_sub_url(&sub_token)
+        } else {
+            let sub_path = p.normalized_sub_path();
+            format!("{sub_scheme}://{host}{sub_path}/{sub_token}")
+        }
+    } else {
+        format!("{sub_scheme}://{host}/sub/{sub_token}")
+    };
     let sub_qr_path = format!("{base_path}/admin/clients/{id}/qr.png?sub=1");
 
     let nodes: Vec<ClientNodeCard> = inbounds
@@ -604,11 +608,22 @@ pub async fn qr_png(
         let proxy_settings = crate::proxy::config::get_proxy_settings(&state.pool)
             .await
             .ok();
-        let sub_path = proxy_settings
-            .as_ref()
-            .map(|p| p.normalized_sub_path())
-            .unwrap_or_else(|| "/sub".to_string());
-        format!("{sub_scheme}://{host}{sub_path}/{tok}")
+        if let Some(custom_host) = params.get("host").filter(|s| !s.is_empty()) {
+            let sub_path = proxy_settings
+                .as_ref()
+                .map(|p| p.normalized_sub_path())
+                .unwrap_or_else(|| "/sub".to_string());
+            format!("{sub_scheme}://{custom_host}{sub_path}/{tok}")
+        } else if let Some(ref p) = proxy_settings {
+            if p.is_enabled() && !p.domain.is_empty() {
+                p.full_sub_url(&tok)
+            } else {
+                let sub_path = p.normalized_sub_path();
+                format!("{sub_scheme}://{host}{sub_path}/{tok}")
+            }
+        } else {
+            format!("{sub_scheme}://{host}/sub/{tok}")
+        }
     } else if let Some(ib_id) = params.get("inbound_id").and_then(|s| s.parse::<i64>().ok()) {
         let inbound = match sqlx::query_as::<_, Inbound>(
             "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
