@@ -3,14 +3,17 @@
 # 3R-UI Fast VPS Test Deployer
 #
 # 专为开发测试设计的秒级热更脚本，解决频繁删打 Git tag 和等待 GitHub CI 的痛点。
+# 支持在 scripts/deploy.conf 中预设 VPS_HOST、VPS_USER、VPS_PORT、VPS_PASS，
+# 执行时全自动登录，无需每次手动输入 IP 与密码。
 #
 # 用法:
 #   ./scripts/deploy-test.sh [root@vps-ip] [x86_64|aarch64]
 #
 # 示例:
+#   ./scripts/deploy-test.sh                  # 读取 scripts/deploy.conf 自动部署
 #   ./scripts/deploy-test.sh root@1.2.3.4
 #   ./scripts/deploy-test.sh root@1.2.3.4 aarch64
-#   ./scripts/deploy-test.sh --no-build root@1.2.3.4  # 跳过编译直接上传已有产物
+#   ./scripts/deploy-test.sh --no-build       # 跳过编译直接上传已有产物
 # ==============================================================================
 
 set -euo pipefail
@@ -46,14 +49,14 @@ fi
 # 目标 VPS 连接信息
 VPS_TARGET="${1:-${VPS_HOST:-}}"
 if [[ -z "$VPS_TARGET" || "$VPS_TARGET" == "your-vps-ip" ]]; then
-    echo "使用方式: $0 [选项] <user@vps-ip[:port]> [arch]"
+    echo "使用方式: $0 [选项] [user@vps-ip[:port]] [arch]"
     echo ""
     echo "示例:"
     echo "  $0 root@1.2.3.4"
     echo "  $0 root@1.2.3.4 aarch64"
-    echo "  $0 --no-build root@1.2.3.4"
+    echo "  $0 --no-build"
     echo ""
-    echo "提示: 也可在 scripts/deploy.conf 中预设 VPS_HOST，后续直接运行 $0 即可。"
+    echo "提示: 在 scripts/deploy.conf 中配置 VPS_HOST 和 VPS_PASS，后续直接敲 $0 即可全自动部署！"
     exit 1
 fi
 
@@ -92,13 +95,43 @@ esac
 
 TARGET_BIN="$WORKSPACE_ROOT/target/${TARGET_TRIPLE}/release/3r-ui"
 
-# SSH 选项
+# SSH / SCP 命令前缀与选项封装
 SSH_OPTS=(-p "$VPS_PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=10)
 SCP_OPTS=(-P "$VPS_PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=10)
 if [[ -n "${SSH_KEY:-}" && -f "${SSH_KEY/#\~/$HOME}" ]]; then
     SSH_OPTS+=(-i "${SSH_KEY/#\~/$HOME}")
     SCP_OPTS+=(-i "${SSH_KEY/#\~/$HOME}")
 fi
+
+SSH_PASS_PREFIX=()
+VPS_PASS="${VPS_PASS:-}"
+if [[ -n "$VPS_PASS" ]]; then
+    if command -v sshpass >/dev/null 2>&1; then
+        SSH_PASS_PREFIX=(sshpass -p "$VPS_PASS")
+    else
+        warn "检测到配置文件中设置了 VPS_PASS 密码，但系统未安装 sshpass 工具。"
+        warn "macOS 安装方法: brew install hudochenkov/sshpass/sshpass"
+        warn "更推荐方案 (无需安装任何工具且更安全):"
+        warn "  直接在终端运行一次公钥免密命令: ssh-copy-id -p $VPS_PORT $VPS_CONN"
+        warn "本次将退回由 SSH 终端交互式输入密码..."
+    fi
+fi
+
+run_ssh() {
+    if [[ ${#SSH_PASS_PREFIX[@]} -gt 0 ]]; then
+        "${SSH_PASS_PREFIX[@]}" ssh "${SSH_OPTS[@]}" "$@"
+    else
+        ssh "${SSH_OPTS[@]}" "$@"
+    fi
+}
+
+run_scp() {
+    if [[ ${#SSH_PASS_PREFIX[@]} -gt 0 ]]; then
+        "${SSH_PASS_PREFIX[@]}" scp "${SCP_OPTS[@]}" "$@"
+    else
+        scp "${SCP_OPTS[@]}" "$@"
+    fi
+}
 
 cd "$WORKSPACE_ROOT"
 
@@ -136,12 +169,12 @@ fi
 
 # 2. 上传
 say "上传二进制包到 ${VPS_CONN}..."
-scp "${SCP_OPTS[@]}" "$TARGET_BIN" "${VPS_CONN}:/tmp/3r-ui.test.tmp"
+run_scp "$TARGET_BIN" "${VPS_CONN}:/tmp/3r-ui.test.tmp"
 ok "上传成功。"
 
 # 3. 远程热更服务
 say "在 VPS 上替换二进制并重启 3r-ui 服务..."
-ssh "${SSH_OPTS[@]}" "${VPS_CONN}" bash -s << 'REMOTE_SCRIPT'
+run_ssh "${VPS_CONN}" bash -s << 'REMOTE_SCRIPT'
 set -euo pipefail
 
 # 权限校验

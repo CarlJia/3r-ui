@@ -23,6 +23,10 @@ VPS_USER="root"
 # SSH_KEY="~/.ssh/id_rsa"
 SSH_KEY=""
 
+# SSH 登录密码 (可选；若填写，脚本将使用 sshpass 自动免交互输入密码)
+# 提示: 如果未安装 sshpass，也可使用更推荐的原生免密: ssh-copy-id -p <PORT> <USER>@<HOST>
+VPS_PASS=""
+
 # SSH 连接额外参数 (可选，如 -o StrictHostKeyChecking=no)
 SSH_EXTRA_ARGS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
 

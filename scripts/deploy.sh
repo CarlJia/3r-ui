@@ -105,12 +105,32 @@ if [[ -n "$SSH_KEY" ]]; then
     SCP_CMD_OPTS+=(-i "$SSH_KEY_EXPANDED")
 fi
 
+SSH_PASS_PREFIX=()
+VPS_PASS="${VPS_PASS:-}"
+if [[ -n "$VPS_PASS" ]]; then
+    if command -v sshpass >/dev/null 2>&1; then
+        SSH_PASS_PREFIX=(sshpass -p "$VPS_PASS")
+    else
+        warn "VPS_PASS is set in configuration, but 'sshpass' is not installed."
+        warn "Install with: brew install hudochenkov/sshpass/sshpass (macOS) or apt-get install sshpass (Linux)"
+        warn "Or use passwordless SSH key authentication: ssh-copy-id -p $VPS_PORT ${VPS_USER}@${VPS_HOST}"
+    fi
+fi
+
 run_ssh() {
-    ssh "${SSH_CMD_OPTS[@]}" "${VPS_USER}@${VPS_HOST}" "$@"
+    if [[ ${#SSH_PASS_PREFIX[@]} -gt 0 ]]; then
+        "${SSH_PASS_PREFIX[@]}" ssh "${SSH_CMD_OPTS[@]}" "${VPS_USER}@${VPS_HOST}" "$@"
+    else
+        ssh "${SSH_CMD_OPTS[@]}" "${VPS_USER}@${VPS_HOST}" "$@"
+    fi
 }
 
 run_scp() {
-    scp "${SCP_CMD_OPTS[@]}" "$@"
+    if [[ ${#SSH_PASS_PREFIX[@]} -gt 0 ]]; then
+        "${SSH_PASS_PREFIX[@]}" scp "${SCP_CMD_OPTS[@]}" "$@"
+    else
+        scp "${SCP_CMD_OPTS[@]}" "$@"
+    fi
 }
 
 echo -e "${CYAN}========================================================${PLAIN}"
