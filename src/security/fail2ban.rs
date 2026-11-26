@@ -201,7 +201,6 @@ pub async fn install_fail2ban() -> Result<String, String> {
                 .args([
                     "--unit=3r-ui-install-fail2ban",
                     "--service-type=oneshot",
-                    "--remain-after-exit=no",
                     "--wait",
                     "bash",
                     "-c",
