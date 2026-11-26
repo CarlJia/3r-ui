@@ -101,8 +101,8 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 MISSING_PKGS=()
-for pkg in curl tar ca-certificates fail2ban; do
-    if ! command -v "$pkg" >/dev/null 2>&1; then
+for pkg in curl tar ca-certificates fail2ban python3-systemd; do
+    if ! command -v "$pkg" >/dev/null 2>&1 && ! dpkg -s "$pkg" >/dev/null 2>&1; then
         MISSING_PKGS+=("$pkg")
     fi
 done

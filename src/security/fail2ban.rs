@@ -48,15 +48,24 @@ fn get_status_sync() -> Fail2banStatus {
         }
     };
 
-    // 执行 fail2ban-client ping 测试服务运行
+    // 优先通过 systemctl is-active fail2ban 判断服务是否处于活跃状态
+    let systemctl_active = Command::new("systemctl")
+        .args(["is-active", "--quiet", "fail2ban"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    // 进一步通过 fail2ban-client ping 测试 daemon 响应
     let ping_output = Command::new(&client_path).arg("ping").output();
-    let running = match ping_output {
+    let ping_pong = match ping_output {
         Ok(out) => {
             let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
             s.contains("pong")
         }
         Err(_) => false,
     };
+
+    let running = systemctl_active || ping_pong;
 
     if !running {
         return Fail2banStatus {
@@ -204,7 +213,7 @@ pub async fn install_fail2ban() -> Result<String, String> {
                     "--wait",
                     "bash",
                     "-c",
-                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban",
+                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban python3-systemd && mkdir -p /var/run/fail2ban /run/fail2ban && systemctl daemon-reload && systemctl enable fail2ban && systemctl restart fail2ban",
                 ])
                 .output()
                 .map_err(|e| format!("systemd-run failed: {e}"))?
@@ -212,7 +221,7 @@ pub async fn install_fail2ban() -> Result<String, String> {
             Command::new("bash")
                 .args([
                     "-c",
-                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban",
+                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban python3-systemd && mkdir -p /var/run/fail2ban /run/fail2ban && systemctl daemon-reload && systemctl enable fail2ban && systemctl restart fail2ban",
                 ])
                 .output()
                 .map_err(|e| format!("apt-get install fail2ban failed: {e}"))?
