@@ -186,14 +186,43 @@ pub async fn unban_ip(jail: &str, ip: &str) -> Result<(), String> {
 /// 自动安装并配置 Fail2ban (调用系统包管理器)
 pub async fn install_fail2ban() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
-        // 尝试执行 apt-get update && apt-get install -y fail2ban
-        let out = Command::new("apt-get")
-            .args(["install", "-y", "fail2ban"])
+        // 由于 3r-ui.service 启用了 systemd 安全加固沙箱 (ProtectSystem=strict)，
+        // 当前进程内部无法直接向 /var/lib/dpkg /usr /etc 等系统目录执行 apt-get 写入操作。
+        // 因此优先使用 `systemd-run` 创建临时的 host 级别 oneshot service 运行安装指令；
+        // 若系统不支持 systemd-run，则回退执行直接安装。
+        let has_systemd_run = Command::new("which")
+            .arg("systemd-run")
             .output()
-            .map_err(|e| format!("apt-get install fail2ban failed: {e}"))?;
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let out = if has_systemd_run {
+            Command::new("systemd-run")
+                .args([
+                    "--unit=3r-ui-install-fail2ban",
+                    "--service-type=oneshot",
+                    "--remain-after-exit=no",
+                    "--wait",
+                    "bash",
+                    "-c",
+                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban",
+                ])
+                .output()
+                .map_err(|e| format!("systemd-run failed: {e}"))?
+        } else {
+            Command::new("bash")
+                .args([
+                    "-c",
+                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban",
+                ])
+                .output()
+                .map_err(|e| format!("apt-get install fail2ban failed: {e}"))?
+        };
 
         if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+            let err = String::from_utf8_lossy(&out.stderr);
+            let out_str = String::from_utf8_lossy(&out.stdout);
+            return Err(format!("{err}\n{out_str}").trim().to_string());
         }
 
         // 重新启动服务
@@ -204,7 +233,7 @@ pub async fn install_fail2ban() -> Result<String, String> {
             .args(["restart", "fail2ban"])
             .output();
 
-        Ok("Fail2ban installed and started successfully.".to_string())
+        Ok("Fail2ban 安装成功并已自动启动。".to_string())
     })
     .await
     .unwrap_or_else(|e| Err(format!("Task error: {e}")))
