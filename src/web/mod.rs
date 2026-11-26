@@ -112,10 +112,22 @@ pub fn router(state: AppState) -> Router {
             post(settings::trigger_update),
         )
         .route("/admin/settings/xray/status", get(settings::update_status))
-        .route("/admin/settings/security", post(settings::save_security_settings))
-        .route("/admin/settings/fail2ban/status", get(settings::fail2ban_status_api))
-        .route("/admin/settings/fail2ban/unban", post(settings::fail2ban_unban_api))
-        .route("/admin/settings/fail2ban/install", post(settings::fail2ban_install_api))
+        .route(
+            "/admin/settings/security",
+            post(settings::save_security_settings),
+        )
+        .route(
+            "/admin/settings/fail2ban/status",
+            get(settings::fail2ban_status_api),
+        )
+        .route(
+            "/admin/settings/fail2ban/unban",
+            post(settings::fail2ban_unban_api),
+        )
+        .route(
+            "/admin/settings/fail2ban/install",
+            post(settings::fail2ban_install_api),
+        )
         .route("/admin/api/system-status", get(system::system_status_api))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

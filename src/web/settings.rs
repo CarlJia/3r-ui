@@ -962,13 +962,19 @@ pub async fn save_security_settings(
         return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
     }
 
-    let fail2ban_enabled = if form.fail2ban_enabled.is_some() { 1 } else { 0 };
+    let fail2ban_enabled = if form.fail2ban_enabled.is_some() {
+        1
+    } else {
+        0
+    };
     let ssh_protection = if form.ssh_protection.is_some() { 1 } else { 0 };
     let web_protection = if form.web_protection.is_some() { 1 } else { 0 };
     let maxretry = form.maxretry.unwrap_or(5);
     let findtime_secs = form.findtime_secs.unwrap_or(600);
     let bantime_secs = form.bantime_secs.unwrap_or(86400);
-    let whitelist_ips = form.whitelist_ips.unwrap_or_else(|| "127.0.0.1/8, ::1".to_string());
+    let whitelist_ips = form
+        .whitelist_ips
+        .unwrap_or_else(|| "127.0.0.1/8, ::1".to_string());
 
     let _ = sqlx::query(
         "UPDATE security_settings SET fail2ban_enabled = ?, ssh_protection = ?, web_protection = ?, maxretry = ?, findtime_secs = ?, bantime_secs = ?, whitelist_ips = ?, updated_at = unixepoch() WHERE id = 1",

@@ -12,7 +12,9 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use crate::crypto::password;
 use crate::crypto::session::{new_csrf_token, new_session_token, now_unix};
 use crate::db::models::{Admin, Inbound};
-use crate::web::middleware::{csrf_from_cookies, BasePath, ClientIp, CurrentAdmin, SECURITY_HEADERS};
+use crate::web::middleware::{
+    csrf_from_cookies, BasePath, ClientIp, CurrentAdmin, SECURITY_HEADERS,
+};
 use crate::web::{AppState, CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL_SECS};
 
 #[derive(Template)]
@@ -95,7 +97,9 @@ pub async fn login_submit(
     axum::extract::Form(form): axum::extract::Form<LoginForm>,
 ) -> Response {
     let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
-    let client_ip = client_ip_ext.map(|Extension(ip)| ip.0).unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let client_ip = client_ip_ext
+        .map(|Extension(ip)| ip.0)
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let admin = sqlx::query_as::<_, Admin>(
         "SELECT id, username, password_hash, created_at FROM admins WHERE username = ?",
     )

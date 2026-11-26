@@ -106,7 +106,10 @@ pub fn parse_jail_list(output: &str) -> Vec<String> {
 
 /// 获取指定 Jail 的详细状态 (fail2ban-client status <jail>)
 fn get_jail_status_sync(client_path: &str, jail: &str) -> Option<JailStatus> {
-    let out = Command::new(client_path).args(["status", jail]).output().ok()?;
+    let out = Command::new(client_path)
+        .args(["status", jail])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -151,10 +154,14 @@ pub async fn unban_ip(jail: &str, ip: &str) -> Result<(), String> {
     let jail = jail.to_string();
     let ip = ip.to_string();
     tokio::task::spawn_blocking(move || {
-        let client_path = which_fail2ban().ok_or_else(|| "fail2ban is not installed".to_string())?;
+        let client_path =
+            which_fail2ban().ok_or_else(|| "fail2ban is not installed".to_string())?;
 
         // 安全检查：校验 jail 与 ip 的字符合法性，防止命令注入
-        if !jail.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !jail
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err("Invalid jail name".to_string());
         }
         if ip.parse::<std::net::IpAddr>().is_err() {
@@ -190,8 +197,12 @@ pub async fn install_fail2ban() -> Result<String, String> {
         }
 
         // 重新启动服务
-        let _ = Command::new("systemctl").args(["enable", "fail2ban"]).output();
-        let _ = Command::new("systemctl").args(["restart", "fail2ban"]).output();
+        let _ = Command::new("systemctl")
+            .args(["enable", "fail2ban"])
+            .output();
+        let _ = Command::new("systemctl")
+            .args(["restart", "fail2ban"])
+            .output();
 
         Ok("Fail2ban installed and started successfully.".to_string())
     })
@@ -200,8 +211,16 @@ pub async fn install_fail2ban() -> Result<String, String> {
 }
 
 fn which_fail2ban() -> Option<String> {
-    for path in ["/usr/bin/fail2ban-client", "/usr/local/bin/fail2ban-client", "fail2ban-client"] {
-        if Command::new("which").arg(path).output().map(|o| o.status.success()).unwrap_or(false)
+    for path in [
+        "/usr/bin/fail2ban-client",
+        "/usr/local/bin/fail2ban-client",
+        "fail2ban-client",
+    ] {
+        if Command::new("which")
+            .arg(path)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
             || std::path::Path::new(path).exists()
         {
             return Some(path.to_string());
