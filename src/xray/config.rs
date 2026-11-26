@@ -51,14 +51,43 @@ pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
         .unwrap_or(Path::new("."));
 
     let mut inbound_values: Vec<Value> = Vec::with_capacity(inbounds.len() + 1);
+    let mut user_inbound_count = 0;
     for inbound in &inbounds {
+        // Mieru runs in its own standalone daemon, not in xray.
+        if inbound.protocol.eq_ignore_ascii_case("mieru") {
+            continue;
+        }
+
+        let mut inbound = inbound.clone();
+        if !inbound.protocol.eq_ignore_ascii_case("hysteria2")
+            && inbound.private_key.trim().is_empty()
+        {
+            tracing::warn!(
+                inbound_id = inbound.id,
+                "REALITY privateKey is empty; auto-generating fresh keypair"
+            );
+            if let Ok(kp) = crate::crypto::reality::generate_keypair() {
+                let _ = sqlx::query(
+                    "UPDATE inbounds SET private_key = ?, public_key = ?, updated_at = unixepoch() WHERE id = ?",
+                )
+                .bind(&kp.private_key)
+                .bind(&kp.public_key)
+                .bind(inbound.id)
+                .execute(pool)
+                .await;
+                inbound.private_key = kp.private_key;
+                inbound.public_key = kp.public_key;
+            }
+        }
+
         let clients = active_clients(pool, inbound.id).await?;
         inbound_values.push(render_inbound(
-            inbound,
+            &inbound,
             &clients,
             data_dir,
             proxy_domain.as_deref(),
         )?);
+        user_inbound_count += 1;
     }
     // Last, so `inbounds[0]` stays the user's inbound for readers of the file.
     inbound_values.push(api_inbound()?);
@@ -115,7 +144,7 @@ pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
     set_owner_only(&tmp_path)?;
     std::fs::rename(&tmp_path, config_path).map_err(AppError::Io)?;
 
-    Ok(inbounds.len())
+    Ok(user_inbound_count)
 }
 
 #[cfg(unix)]
@@ -131,10 +160,10 @@ fn set_owner_only(_path: &Path) -> AppResult<()> {
 
 pub async fn active_inbounds(pool: &SqlitePool) -> AppResult<Vec<Inbound>> {
     sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
-         FROM inbounds WHERE status = 'active' ORDER BY id",
+         FROM inbounds WHERE status = 'active' AND protocol != 'mieru' ORDER BY id",
     )
     .fetch_all(pool)
     .await
@@ -268,9 +297,20 @@ fn render_inbound(
     data_dir: &Path,
     proxy_domain: Option<&str>,
 ) -> AppResult<Value> {
-    if inbound.protocol == "hysteria2" {
+    if inbound.protocol.eq_ignore_ascii_case("hysteria2") {
         render_hysteria2_inbound(inbound, clients, data_dir, proxy_domain)
+    } else if inbound.protocol.eq_ignore_ascii_case("mieru") {
+        Err(AppError::Config(
+            "mieru protocol is managed by standalone daemon and cannot be rendered in xray config"
+                .into(),
+        ))
     } else {
+        if inbound.private_key.trim().is_empty() {
+            return Err(AppError::Config(format!(
+                "inbound-{} (protocol '{}') has empty privateKey for REALITY",
+                inbound.id, inbound.protocol
+            )));
+        }
         Ok(render_vless_inbound(inbound, clients))
     }
 }
@@ -292,9 +332,15 @@ fn render_vless_inbound(inbound: &Inbound, clients: &[Client]) -> Value {
         })
         .collect();
 
+    let listen_addr = if inbound.listen_ip.trim().is_empty() {
+        "0.0.0.0"
+    } else {
+        inbound.listen_ip.trim()
+    };
+
     json!({
         "tag": format!("inbound-{}", inbound.id),
-        "listen": "0.0.0.0",
+        "listen": listen_addr,
         "port": inbound.listen_port,
         "protocol": "vless",
         "settings": {
@@ -387,9 +433,15 @@ fn render_hysteria2_inbound(
         inbound.masquerade_url.trim()
     };
 
+    let listen_addr = if inbound.listen_ip.trim().is_empty() {
+        "0.0.0.0"
+    } else {
+        inbound.listen_ip.trim()
+    };
+
     Ok(json!({
         "tag": format!("inbound-{}", inbound.id),
-        "listen": "0.0.0.0",
+        "listen": listen_addr,
         "port": inbound.listen_port,
         "protocol": "hysteria",
         "settings": {
@@ -432,6 +484,7 @@ mod tests {
     fn inbound() -> Inbound {
         Inbound {
             id: 1,
+            listen_ip: "0.0.0.0".into(),
             listen_port: 443,
             dest: "www.apple.com".into(),
             sni: "www.apple.com".into(),
@@ -488,6 +541,20 @@ mod tests {
         assert_eq!(ss["realitySettings"]["dest"], "www.apple.com:443");
         assert_eq!(ss["realitySettings"]["serverNames"][0], "www.apple.com");
         assert_eq!(ss["realitySettings"]["shortIds"][0], "abcd");
+    }
+
+    #[test]
+    fn inbound_listens_on_specified_ip() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut ib = inbound();
+        ib.listen_ip = "198.51.100.1".into();
+        let v = render_inbound(&ib, &[client("abc-123")], temp_dir.path(), None).unwrap();
+        assert_eq!(v["listen"], "198.51.100.1");
+
+        ib.protocol = "hysteria2".into();
+        ib.listen_ip = "203.0.113.2".into();
+        let v_hy2 = render_inbound(&ib, &[client("abc-123")], temp_dir.path(), None).unwrap();
+        assert_eq!(v_hy2["listen"], "203.0.113.2");
     }
 
     #[test]
@@ -615,5 +682,25 @@ mod tests {
     #[test]
     fn domain_strategy_is_as_is() {
         assert_eq!(DOMAIN_STRATEGY, "AsIs");
+    }
+
+    #[test]
+    fn render_inbound_rejects_mieru_protocol() {
+        let mut ib = inbound();
+        ib.protocol = "mieru".into();
+        ib.private_key = "".into();
+        let err = render_inbound(&ib, &[], Path::new("."), None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("mieru protocol is managed by standalone daemon"));
+    }
+
+    #[test]
+    fn render_inbound_rejects_empty_private_key_for_vless() {
+        let mut ib = inbound();
+        ib.protocol = "vless".into();
+        ib.private_key = "".into();
+        let err = render_inbound(&ib, &[], Path::new("."), None).unwrap_err();
+        assert!(err.to_string().contains("empty privateKey for REALITY"));
     }
 }

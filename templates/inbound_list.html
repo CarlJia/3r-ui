@@ -93,7 +93,7 @@
         <thead>
           <tr>
             <th>协议</th>
-            <th>监听端口</th>
+            <th>监听 IP:端口</th>
             <th>SNI / 域名</th>
             <th>传输与伪装</th>
             <th>状态</th>
@@ -112,7 +112,7 @@
               <span class="badge badge-vless">VLESS</span>
               {% endif %}
             </td>
-            <td><code>{% if !ib.port_range.is_empty() %}{{ ib.port_range }}{% else %}{{ ib.listen_port }}{% endif %}</code></td>
+            <td><code>{% if !ib.listen_ip.is_empty() && ib.listen_ip != "0.0.0.0" %}{{ ib.listen_ip }}:{% endif %}{% if !ib.port_range.is_empty() %}{{ ib.port_range }}{% else %}{{ ib.listen_port }}{% endif %}</code></td>
             <td><code>{% if ib.sni.is_empty() %}-{% else %}<span class="table-truncate" style="max-width: 150px;" data-tooltip="{{ ib.sni }}" title="{{ ib.sni }}">{{ ib.sni }}</span>{% endif %}</code></td>
             <td style="font-size: 12px; opacity: .85;">
               {% if ib.protocol == "hysteria2" %}

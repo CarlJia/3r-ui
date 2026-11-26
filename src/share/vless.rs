@@ -76,6 +76,7 @@ mod tests {
     fn inbound() -> Inbound {
         Inbound {
             id: 1,
+            listen_ip: "0.0.0.0".into(),
             listen_port: 443,
             dest: "www.apple.com".into(),
             sni: "www.apple.com".into(),

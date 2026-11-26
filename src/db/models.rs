@@ -11,6 +11,7 @@ pub struct Admin {
 #[derive(Debug, Clone, FromRow)]
 pub struct Inbound {
     pub id: i64,
+    pub listen_ip: String,
     pub listen_port: i64,
     pub dest: String,
     pub sni: String,

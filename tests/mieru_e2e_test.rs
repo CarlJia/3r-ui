@@ -124,4 +124,58 @@ async fn test_mieru_config_rendering_and_subscription() {
     assert!(decoded_str.contains("port=2012-2022"));
     assert!(decoded_str.contains("protocol=TCP%2CUDP") || decoded_str.contains("protocol=TCP,UDP"));
     assert!(decoded_str.contains("mtu=1400"));
+
+    // 5. Test xray config rendering skips Mieru inbound and succeeds without REALITY error
+    let xray_config_path = h.dir.path().join("xray").join("config.json");
+    let xray_count = three_r_ui::xray::config::render(&h.pool, &xray_config_path)
+        .await
+        .expect("xray render must succeed and skip mieru inbound");
+    assert_eq!(xray_count, 0);
+
+    let xray_content = std::fs::read_to_string(&xray_config_path).expect("read xray config");
+    let xray_json: Value = serde_json::from_str(&xray_content).expect("parse xray config");
+    let xray_inbounds = xray_json["inbounds"].as_array().expect("inbounds array");
+    // Only API inbound should be present, not inbound-1 (Mieru)
+    assert_eq!(xray_inbounds.len(), 1);
+    assert_eq!(xray_inbounds[0]["tag"], "api");
+}
+
+#[tokio::test]
+async fn test_xray_config_auto_heals_empty_vless_private_key() {
+    let h = boot().await;
+
+    // Insert VLESS inbound with empty private_key
+    sqlx::query(
+        "INSERT INTO inbounds (id, listen_port, dest, sni, server_name, private_key, \
+                public_key, short_id, xhttp_path, protocol, cert_mode, port_range, \
+                transport_protocol, status, created_at, updated_at) \
+         VALUES (2, 9443, 'www.apple.com', 'www.apple.com', NULL, '', '', '0123456789abcdef', \
+                '/r/testpath12345678', 'vless', 'reality', '', 'TCP', 'active', unixepoch(), unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .expect("insert vless inbound with empty private_key");
+
+    let xray_config_path = h.dir.path().join("xray").join("config_vless.json");
+    let xray_count = three_r_ui::xray::config::render(&h.pool, &xray_config_path)
+        .await
+        .expect("xray render must succeed and auto-heal empty private_key");
+    assert_eq!(xray_count, 1);
+
+    // Verify DB was healed
+    let (priv_key, pub_key): (String, String) =
+        sqlx::query_as("SELECT private_key, public_key FROM inbounds WHERE id = 2")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(priv_key.len(), 43);
+    assert_eq!(pub_key.len(), 43);
+
+    // Verify rendered config has valid privateKey
+    let content = std::fs::read_to_string(&xray_config_path).expect("read xray config");
+    let json: Value = serde_json::from_str(&content).expect("parse xray config");
+    assert_eq!(
+        json["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"],
+        priv_key
+    );
 }

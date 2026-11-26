@@ -65,6 +65,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/inbound/:id/delete", post(inbound::delete_by_id))
         .route("/admin/inbound/:id/toggle", post(inbound::toggle))
         .route("/admin/inbound/delete", post(inbound::delete))
+        .route(
+            "/admin/api/network-interfaces",
+            get(inbound::api_network_interfaces),
+        )
         .route("/admin/clients", get(clients::list))
         .route("/admin/clients/new", get(clients::new_form))
         .route("/admin/clients", post(clients::create))

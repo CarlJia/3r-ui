@@ -48,11 +48,13 @@ struct InboundFormTemplate {
 #[derive(Clone, Debug)]
 pub struct InboundView {
     pub id: i64,
+    pub listen_ip: String,
     pub listen_port: i64,
     pub protocol: String,
     pub cert_mode: String,
     pub dest: String,
     pub sni: String,
+    pub server_name: String,
     pub public_key: String,
     pub short_id: String,
     pub xhttp_path: String,
@@ -71,11 +73,13 @@ impl From<&Inbound> for InboundView {
     fn from(i: &Inbound) -> Self {
         Self {
             id: i.id,
+            listen_ip: i.listen_ip.clone(),
             listen_port: i.listen_port,
             protocol: i.protocol.clone(),
             cert_mode: i.cert_mode.clone(),
             dest: i.dest.clone(),
             sni: i.sni.clone(),
+            server_name: i.server_name.clone().unwrap_or_default(),
             public_key: i.public_key.clone(),
             short_id: i.short_id.clone(),
             xhttp_path: crate::xray::config::effective_xhttp_path(i),
@@ -98,8 +102,12 @@ pub struct InboundForm {
     pub id: Option<i64>,
     #[serde(default)]
     pub action: Option<String>,
+    #[serde(default = "default_listen_ip")]
+    pub listen_ip: String,
     #[serde(default)]
     pub listen_port: String,
+    #[serde(default)]
+    pub server_name: String,
     #[serde(default = "default_protocol")]
     pub protocol: String,
     #[serde(default = "default_cert_mode")]
@@ -128,6 +136,10 @@ pub struct InboundForm {
     pub udp: String,
     #[serde(default = "default_status")]
     pub status: String,
+}
+
+fn default_listen_ip() -> String {
+    "0.0.0.0".to_string()
 }
 
 fn default_skip_cert_verify() -> String {
@@ -227,6 +239,10 @@ pub async fn new_form(
 }
 
 /// `GET /admin/inbound/:id/edit` or `GET /admin/inbound/:id` — show edit form for an inbound.
+pub async fn api_network_interfaces() -> axum::Json<Vec<crate::net::NetworkInterfaceInfo>> {
+    axum::Json(crate::net::get_local_interfaces())
+}
+
 pub async fn edit_form(
     State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
@@ -285,6 +301,48 @@ pub async fn update(
     let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     form.id = Some(id);
     handle_save(state, jar, Some(id), form, &base_path).await
+}
+
+pub fn parse_port_range(s: &str) -> Option<(u16, u16)> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (start_str, end_str) = s.split_once('-')?;
+    let start: u16 = start_str.trim().parse().ok()?;
+    let end: u16 = end_str.trim().parse().ok()?;
+    if (1..=65535).contains(&start) && (1..=65535).contains(&end) && start <= end {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+
+pub fn ports_overlap(p1: i64, range1: &str, p2: i64, range2: &str) -> bool {
+    let r1 = parse_port_range(range1);
+    let r2 = parse_port_range(range2);
+
+    match (r1, r2) {
+        (Some((s1, e1)), Some((s2, e2))) => s1 <= e2 && s2 <= e1,
+        (Some((s1, e1)), None) => (s1 as i64..=e1 as i64).contains(&p2),
+        (None, Some((s2, e2))) => (s2 as i64..=e2 as i64).contains(&p1),
+        (None, None) => p1 == p2,
+    }
+}
+
+pub fn normalize_ip(ip: &str) -> &str {
+    let t = ip.trim();
+    if t.is_empty() {
+        "0.0.0.0"
+    } else {
+        t
+    }
+}
+
+pub fn ips_conflict(ip1: &str, ip2: &str) -> bool {
+    let norm1 = normalize_ip(ip1);
+    let norm2 = normalize_ip(ip2);
+    norm1 == "0.0.0.0" || norm1 == "::" || norm2 == "0.0.0.0" || norm2 == "::" || norm1 == norm2
 }
 
 async fn handle_save(
@@ -496,42 +554,107 @@ async fn handle_save(
         "active".to_string()
     };
 
+    let listen_ip = {
+        let raw = form.listen_ip.trim();
+        if raw.is_empty() {
+            "0.0.0.0".to_string()
+        } else {
+            raw.to_string()
+        }
+    };
+    if listen_ip.parse::<std::net::IpAddr>().is_err() {
+        return render_error(
+            &jar,
+            existing.as_ref(),
+            format!("监听 IP 地址格式不正确: {listen_ip}"),
+            base_path,
+        )
+        .await;
+    }
+    let server_name = {
+        let raw = form.server_name.trim();
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw.to_string())
+        }
+    };
+
     // Check port uniqueness against other active inbounds only if activating/active
     if status == "active" {
         let existing_id = existing.as_ref().map(|i| i.id).unwrap_or(0);
-        let port_in_use: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM inbounds WHERE listen_port = ? AND id != ? AND status = 'active'",
+        let other_inbounds: Vec<Inbound> = sqlx::query_as(
+            "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+                    xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
+                    port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+             FROM inbounds WHERE id != ? AND status = 'active'",
         )
-        .bind(port)
         .bind(existing_id)
-        .fetch_one(&state.pool)
+        .fetch_all(&state.pool)
         .await
-        .unwrap_or(0);
+        .unwrap_or_default();
 
-        if port_in_use > 0 {
-            return render_error(
-                &jar,
-                existing.as_ref(),
-                format!("端口 {port} 已被占用"),
-                base_path,
-            )
-            .await;
+        for other in &other_inbounds {
+            if ips_conflict(&listen_ip, &other.listen_ip)
+                && ports_overlap(port, &port_range, other.listen_port, &other.port_range)
+            {
+                let conflict_port_desc = if !port_range.is_empty() {
+                    format!("端口范围 {port_range}")
+                } else {
+                    format!("端口 {port}")
+                };
+                let other_ip_desc = if other.listen_ip == "0.0.0.0" {
+                    "全局(0.0.0.0)".to_string()
+                } else {
+                    format!("IP {}", other.listen_ip)
+                };
+                return render_error(
+                    &jar,
+                    existing.as_ref(),
+                    format!("{conflict_port_desc} 已被 {other_ip_desc} 上的入站占用"),
+                    base_path,
+                )
+                .await;
+            }
+        }
+
+        if is_mieru {
+            let candidate_norm_ip = normalize_ip(&listen_ip);
+            for other in &other_inbounds {
+                if other.protocol == "mieru" {
+                    let other_norm_ip = normalize_ip(&other.listen_ip);
+                    if candidate_norm_ip != other_norm_ip {
+                        return render_error(
+                            &jar,
+                            existing.as_ref(),
+                            format!(
+                                "Mieru 守护进程仅支持全局单一监听 IP。已有活动 Mieru 入站监听在 {}，无法同时监听在 {}",
+                                other.listen_ip, listen_ip
+                            ),
+                            base_path,
+                        )
+                        .await;
+                    }
+                }
+            }
         }
     }
 
     let result = match &existing {
         Some(inbound) => {
             sqlx::query(
-                "UPDATE inbounds SET listen_port = ?, dest = ?, sni = ?, short_id = ?, \
+                "UPDATE inbounds SET listen_ip = ?, listen_port = ?, dest = ?, sni = ?, server_name = ?, short_id = ?, \
                         xhttp_path = ?, private_key = ?, public_key = ?, protocol = ?, cert_mode = ?, \
                         custom_cert_path = ?, custom_key_path = ?, masquerade_url = ?, port_range = ?, transport_protocol = ?, \
                         skip_cert_verify = ?, udp = ?, status = ?, \
                         updated_at = unixepoch() \
                  WHERE id = ?",
             )
+            .bind(&listen_ip)
             .bind(port)
             .bind(&dest)
             .bind(&sni)
+            .bind(&server_name)
             .bind(&short_id)
             .bind(&xhttp_path)
             .bind(&private_key)
@@ -552,16 +675,18 @@ async fn handle_save(
         }
         None => {
             sqlx::query(
-                "INSERT INTO inbounds (listen_port, dest, sni, server_name, private_key, \
+                "INSERT INTO inbounds (listen_ip, listen_port, dest, sni, server_name, private_key, \
                         public_key, short_id, xhttp_path, protocol, cert_mode, \
                         custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, \
                         skip_cert_verify, udp, status, \
                         created_at, updated_at) \
-                 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())",
             )
+            .bind(&listen_ip)
             .bind(port)
             .bind(&dest)
             .bind(&sni)
+            .bind(&server_name)
             .bind(&private_key)
             .bind(&public_key)
             .bind(&short_id)
@@ -665,21 +790,51 @@ pub async fn toggle(
         .execute(&state.pool)
         .await;
     } else {
-        // Check if port is in use by another active inbound
-        let port_in_use: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM inbounds WHERE listen_port = ? AND id != ? AND status = 'active'",
+        let other_inbounds: Vec<Inbound> = sqlx::query_as(
+            "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+                    xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
+                    port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+             FROM inbounds WHERE id != ? AND status = 'active'",
         )
-        .bind(ib.listen_port)
         .bind(id)
-        .fetch_one(&state.pool)
+        .fetch_all(&state.pool)
         .await
-        .unwrap_or(0);
+        .unwrap_or_default();
 
-        if port_in_use > 0 {
-            tracing::warn!(
-                port = ib.listen_port,
-                "cannot activate inbound: port in use"
-            );
+        let mut conflict = false;
+        for other in &other_inbounds {
+            if ips_conflict(&ib.listen_ip, &other.listen_ip)
+                && ports_overlap(
+                    ib.listen_port,
+                    &ib.port_range,
+                    other.listen_port,
+                    &other.port_range,
+                )
+            {
+                tracing::warn!(
+                    port = ib.listen_port,
+                    listen_ip = %ib.listen_ip,
+                    other_ip = %other.listen_ip,
+                    "cannot activate inbound: port in use on overlapping IP"
+                );
+                conflict = true;
+                break;
+            }
+        }
+
+        if !conflict && ib.protocol == "mieru" {
+            let candidate_norm_ip = normalize_ip(&ib.listen_ip);
+            for other in &other_inbounds {
+                if other.protocol == "mieru" && candidate_norm_ip != normalize_ip(&other.listen_ip)
+                {
+                    tracing::warn!("cannot activate mieru inbound: conflicting listen IP with active mieru inbound");
+                    conflict = true;
+                    break;
+                }
+            }
+        }
+
+        if conflict {
             return redirect_to_inbound(&jar, &base_path);
         }
 
@@ -697,7 +852,7 @@ pub async fn toggle(
 
 async fn list_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<Inbound>> {
     sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
           FROM inbounds WHERE status != 'deleted' ORDER BY id ASC",
@@ -710,7 +865,7 @@ async fn list_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<I
 #[allow(dead_code)]
 async fn list_active_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<Inbound>> {
     sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
           FROM inbounds WHERE status = 'active' ORDER BY id ASC",
@@ -808,4 +963,48 @@ fn decorate(mut response: Response, jar: Option<&CookieJar>) -> Response {
         );
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ips_conflict() {
+        assert!(ips_conflict("0.0.0.0", "198.51.100.1"));
+        assert!(ips_conflict("198.51.100.1", "0.0.0.0"));
+        assert!(ips_conflict("::", "2001:db8::1"));
+        assert!(ips_conflict("198.51.100.1", "198.51.100.1"));
+        assert!(ips_conflict("", "198.51.100.1")); // empty normalized to 0.0.0.0
+
+        // Distinct non-wildcard IPs do NOT conflict
+        assert!(!ips_conflict("198.51.100.1", "203.0.113.2"));
+        assert!(!ips_conflict("10.0.0.1", "10.0.0.2"));
+    }
+
+    #[test]
+    fn test_ports_overlap() {
+        // Simple ports
+        assert!(ports_overlap(443, "", 443, ""));
+        assert!(!ports_overlap(443, "", 8443, ""));
+
+        // Single port vs Range
+        assert!(ports_overlap(2015, "", 0, "2012-2022"));
+        assert!(!ports_overlap(2025, "", 0, "2012-2022"));
+        assert!(ports_overlap(0, "2012-2022", 2012, ""));
+        assert!(!ports_overlap(0, "2012-2022", 2011, ""));
+
+        // Range vs Range
+        assert!(ports_overlap(0, "2012-2022", 0, "2020-2030"));
+        assert!(!ports_overlap(0, "2012-2022", 0, "2023-2030"));
+    }
+
+    #[test]
+    fn test_parse_port_range() {
+        assert_eq!(parse_port_range("2012-2022"), Some((2012, 2022)));
+        assert_eq!(parse_port_range(" 80-80 "), Some((80, 80)));
+        assert_eq!(parse_port_range(""), None);
+        assert_eq!(parse_port_range("invalid"), None);
+        assert_eq!(parse_port_range("2022-2012"), None);
+    }
 }

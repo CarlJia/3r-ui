@@ -424,7 +424,7 @@ pub async fn detail(
     }
 
     let bound_inbounds: Vec<Inbound> = sqlx::query_as(
-        "SELECT i.id, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
+        "SELECT i.id, i.listen_ip, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
                 i.short_id, i.xhttp_path, i.protocol, i.cert_mode, i.custom_cert_path, i.custom_key_path, \
                 i.masquerade_url, i.port_range, i.transport_protocol, i.skip_cert_verify, i.udp, i.status, i.created_at, i.updated_at \
          FROM inbounds i \
@@ -511,12 +511,14 @@ pub async fn detail(
             };
             c_clone.name = Some(format!("{base_name} - {proto_label}"));
 
+            let node_host = crate::share::resolve_inbound_host(ib, &host);
+
             let uri = if is_hy2 {
-                crate::share::hy2::build_uri(&c_clone, ib, &host)
+                crate::share::hy2::build_uri(&c_clone, ib, &node_host)
             } else if is_mieru {
-                crate::share::mieru::build_uri(&c_clone, ib, &host)
+                crate::share::mieru::build_uri(&c_clone, ib, &node_host)
             } else {
-                crate::share::vless::build_uri(&c_clone, ib, &host)
+                crate::share::vless::build_uri(&c_clone, ib, &node_host)
             };
             let qr_path = format!("{base_path}/admin/clients/{id}/qr.png?inbound_id={}", ib.id);
 
@@ -626,7 +628,7 @@ pub async fn qr_png(
         }
     } else if let Some(ib_id) = params.get("inbound_id").and_then(|s| s.parse::<i64>().ok()) {
         let inbound = match sqlx::query_as::<_, Inbound>(
-            "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+            "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                     xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                     port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
              FROM inbounds WHERE id = ?",
@@ -639,19 +641,22 @@ pub async fn qr_png(
             _ => return not_found_response(),
         };
 
+        let node_host = crate::share::resolve_inbound_host(&inbound, &host);
+
         if inbound.protocol == "hysteria2" {
-            crate::share::hy2::build_uri(&client, &inbound, &host)
+            crate::share::hy2::build_uri(&client, &inbound, &node_host)
         } else if inbound.protocol == "mieru" {
-            crate::share::mieru::build_uri(&client, &inbound, &host)
+            crate::share::mieru::build_uri(&client, &inbound, &node_host)
         } else {
-            crate::share::vless::build_uri(&client, &inbound, &host)
+            crate::share::vless::build_uri(&client, &inbound, &node_host)
         }
     } else {
         let inbound = match load_active_inbound(&state.pool).await {
             Ok(Some(i)) => i,
             _ => return not_found_response(),
         };
-        crate::share::vless::build_uri(&client, &inbound, &host)
+        let node_host = crate::share::resolve_inbound_host(&inbound, &host);
+        crate::share::vless::build_uri(&client, &inbound, &node_host)
     };
 
     match crate::share::qr::render_png(&uri) {
@@ -687,7 +692,7 @@ async fn render_detail_error(jar: &CookieJar, message: String) -> Response {
 
 async fn load_active_inbound(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Option<Inbound>> {
     sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
@@ -939,7 +944,7 @@ async fn load_client(pool: &sqlx::SqlitePool, id: i64) -> crate::error::AppResul
 
 async fn current_inbound(state: &AppState) -> crate::error::AppResult<Option<Inbound>> {
     sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
@@ -998,7 +1003,7 @@ async fn list_all_active_inbounds(
     pool: &sqlx::SqlitePool,
 ) -> crate::error::AppResult<Vec<Inbound>> {
     sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
                 port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id ASC",

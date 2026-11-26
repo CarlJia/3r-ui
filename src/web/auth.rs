@@ -323,7 +323,7 @@ pub async fn dashboard(
 
     // 3. Inbound info
     let inbound_row = sqlx::query_as::<_, Inbound>(
-        "SELECT id, listen_port, dest, sni, server_name, private_key, public_key, short_id, xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at FROM inbounds LIMIT 1",
+        "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at FROM inbounds LIMIT 1",
     )
     .fetch_optional(&state.pool)
     .await

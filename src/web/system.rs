@@ -262,7 +262,11 @@ impl SystemTracker {
             app_xray_mem_bytes,
             app_xray_mem_formatted: format_bytes_human(app_xray_mem_bytes),
             app_hy2_mem_bytes,
-            app_hy2_mem_formatted: format_bytes_human(app_hy2_mem_bytes),
+            app_hy2_mem_formatted: if app_hy2_mem_bytes > 0 {
+                format_bytes_human(app_hy2_mem_bytes)
+            } else {
+                "内嵌Xray".to_string()
+            },
             app_mieru_mem_bytes,
             app_mieru_mem_formatted: format_bytes_human(app_mieru_mem_bytes),
             app_total_mem_bytes,

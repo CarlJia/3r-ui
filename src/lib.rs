@@ -3,6 +3,7 @@ pub mod crypto;
 pub mod db;
 pub mod error;
 pub mod mieru;
+pub mod net;
 pub mod proxy;
 pub mod quota;
 pub mod security;
@@ -128,7 +129,7 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     ));
 
     // Mieru daemon supervisor
-    let mieru_bin = mieru::ensure_mieru(&config.data_dir).await?;
+    let mieru_bin = resolve_mieru_binary(&config.data_dir).await;
     let mieru_config_path = config.data_dir.join("mieru").join("config.json");
     let _ = mieru::render_to_file(&pool, &mieru_config_path).await;
     let (mieru_tx, mieru_rx) = mpsc::channel::<mieru::MieruCommand>(16);
@@ -292,6 +293,35 @@ fn default_xray_path(config: &AppConfig) -> std::path::PathBuf {
         .data_dir
         .join("xray")
         .join(if cfg!(windows) { "xray.exe" } else { "xray" })
+}
+
+/// Resolve the Mieru server binary, downloading it when it is missing.
+///
+/// A missing binary must not take the whole panel down: the operator may
+/// still want to manage the other protocols. The supervisor then refuses to
+/// start the daemon and the reason is logged.
+async fn resolve_mieru_binary(data_dir: &Path) -> std::path::PathBuf {
+    let expected = data_dir.join("mieru").join("mita");
+    let installer = match mieru::MitaInstaller::new() {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, "mieru installer unavailable");
+            return expected;
+        }
+    };
+    match installer.ensure_mita(data_dir).await {
+        Ok(path) => {
+            tracing::info!(path = %path.display(), "mieru server ready");
+            path
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "mieru server binary unavailable; mieru inbounds stay down until a mita binary exists"
+            );
+            expected
+        }
+    }
 }
 
 /// Start the panel and block until Ctrl-C, then shut the supervisor down.
