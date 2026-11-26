@@ -152,6 +152,24 @@ impl ProxySettings {
         format!("https://{}{}{}", self.domain, port_part, p)
     }
 
+    /// 返回完整的反代订阅访问入口 URL，例如 `https://jp2.856668.xyz:8443/sub/token123` 或 `https://jp2.856668.xyz/sub/token123`。
+    pub fn full_sub_url(&self, token: &str) -> String {
+        if self.domain.is_empty() {
+            return String::new();
+        }
+        let port_part = if self.listen_port == 443 {
+            String::new()
+        } else {
+            format!(":{}", self.listen_port)
+        };
+        let sub_p = self.normalized_sub_path();
+        if token.is_empty() {
+            format!("https://{}{}{}", self.domain, port_part, sub_p)
+        } else {
+            format!("https://{}{}{}/{}", self.domain, port_part, sub_p, token)
+        }
+    }
+
     /// 返回脱敏后的 Cloudflare API Token 用于前端回显
     pub fn masked_cf_token(&self) -> String {
         if self.cf_api_token.is_empty() {
@@ -249,5 +267,47 @@ mod tests {
         // Root path
         settings.path = "".to_string();
         assert_eq!(settings.full_url(), "https://jp2.856668.xyz");
+    }
+
+    #[test]
+    fn test_proxy_settings_full_sub_url() {
+        let mut settings = ProxySettings {
+            id: 1,
+            enabled: 1,
+            domain: "jp2.856668.xyz".to_string(),
+            listen_port: 8443,
+            path: "/xxjjye".to_string(),
+            sub_path: "/sub".to_string(),
+            cert_mode: "cf_dns".to_string(),
+            cf_api_token: "".to_string(),
+            cf_zone_id: "".to_string(),
+            custom_cert_path: "".to_string(),
+            custom_key_path: "".to_string(),
+            cert_expires_at: None,
+            last_renewed_at: None,
+            last_error: None,
+            updated_at: 0,
+        };
+        assert_eq!(
+            settings.full_sub_url("token123"),
+            "https://jp2.856668.xyz:8443/sub/token123"
+        );
+
+        // Standard 443 port omits :443
+        settings.listen_port = 443;
+        assert_eq!(
+            settings.full_sub_url("token123"),
+            "https://jp2.856668.xyz/sub/token123"
+        );
+
+        // Custom sub_path
+        settings.sub_path = "/mysub".to_string();
+        assert_eq!(
+            settings.full_sub_url("token123"),
+            "https://jp2.856668.xyz/mysub/token123"
+        );
+
+        // Empty token
+        assert_eq!(settings.full_sub_url(""), "https://jp2.856668.xyz/mysub");
     }
 }

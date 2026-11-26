@@ -255,6 +255,42 @@ async fn detail_page_warns_when_public_host_is_unset() {
 }
 
 #[tokio::test]
+async fn detail_page_renders_https_sub_url_when_proxy_enabled() {
+    let (h, id) = boot_with_inbound_and_client().await;
+    // Enable proxy in proxy_settings
+    sqlx::query(
+        "UPDATE proxy_settings SET enabled = 1, domain = 'jp2.856668.xyz', listen_port = 8443, sub_path = '/sub' WHERE id = 1",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let (session, _csrf) = login(&h).await;
+    let resp = get(&h, &format!("/admin/clients/{id}"), &session).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+
+    // Sub URL should use https and proxy settings
+    assert!(
+        html.contains("https://jp2.856668.xyz:8443/sub/"),
+        "HTML was expected to contain https sub url with proxy port, got: {html}"
+    );
+
+    // Also verify standard 443 port omits :443
+    sqlx::query("UPDATE proxy_settings SET listen_port = 443 WHERE id = 1")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let resp2 = get(&h, &format!("/admin/clients/{id}"), &session).await;
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let html2 = body_text(resp2).await;
+    assert!(
+        html2.contains("https://jp2.856668.xyz/sub/"),
+        "HTML was expected to contain https sub url on port 443, got: {html2}"
+    );
+}
+
+#[tokio::test]
 async fn qr_png_endpoint_streams_a_real_png() {
     let (h, id) = boot_with_inbound_and_client().await;
     let (session, _csrf) = login(&h).await;
