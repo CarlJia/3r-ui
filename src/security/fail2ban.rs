@@ -288,10 +288,12 @@ failregex = ^.*\[SECURITY\] Web login failed for user='.*' from ip='<HOST>'.*$
 ignoreregex =
 "#;
 
-/// 将当前安全配置同步写入 Fail2ban 配置并重启服务
+/// 将当前安全配置同步写入 Fail2ban 配置并重载服务
 pub async fn sync_fail2ban_config(
     settings: &crate::db::models::SecuritySettings,
 ) -> Result<(), String> {
+    use base64::Engine;
+
     let settings = settings.clone();
     tokio::task::spawn_blocking(move || {
         if which_fail2ban().is_none() {
@@ -301,42 +303,51 @@ pub async fn sync_fail2ban_config(
         let ssh_port = detect_ssh_port();
         let jail_content = generate_jail_config(&settings, ssh_port);
 
-        // 确保目录存在
-        let _ = std::fs::create_dir_all("/etc/fail2ban/filter.d");
-        let _ = std::fs::create_dir_all("/etc/fail2ban/jail.d");
+        let b64_filter = base64::prelude::BASE64_STANDARD.encode(FILTER_3R_UI.as_bytes());
+        let b64_jail = base64::prelude::BASE64_STANDARD.encode(jail_content.as_bytes());
 
-        // 写入 3r-ui filter
-        if let Err(e) = std::fs::write("/etc/fail2ban/filter.d/3r-ui.conf", FILTER_3R_UI) {
-            tracing::warn!("Failed to write /etc/fail2ban/filter.d/3r-ui.conf: {e}");
-        }
+        // 由于 3r-ui 运行在 systemd 沙箱 (ProtectSystem=strict) 中，
+        // 直接在进程内部写 /etc/fail2ban 会遭遇只读文件系统错误 (os error 30)。
+        // 故优先通过 systemd-run 运行 oneshot 命令在 host 级别安全写入配置并重载。
+        let sync_cmd = format!(
+            "mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d && \
+             echo '{b64_filter}' | base64 -d > /etc/fail2ban/filter.d/3r-ui.conf && \
+             rm -f /etc/fail2ban/jail.d/defaults-debian.conf && \
+             echo '{b64_jail}' | base64 -d > /etc/fail2ban/jail.local && \
+             (fail2ban-client reload || systemctl restart fail2ban)"
+        );
 
-        // 解决 Debian 12 缺少 rsyslog 导致 defaults-debian.conf backend=auto 启动崩溃的问题
-        if std::path::Path::new("/etc/fail2ban/jail.d/defaults-debian.conf").exists() {
-            let debian_fix = "[sshd]\nenabled = true\nbackend = systemd\n";
-            let _ = std::fs::write("/etc/fail2ban/jail.d/defaults-debian.conf", debian_fix);
-        }
+        let has_systemd_run = Command::new("which")
+            .arg("systemd-run")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
-        // 写入主配置 /etc/fail2ban/jail.local (优先级高于 jail.d/*.conf，实现全局覆盖)
-        if let Err(e) = std::fs::write("/etc/fail2ban/jail.local", jail_content) {
-            return Err(format!("Failed to write /etc/fail2ban/jail.local: {e}"));
-        }
-
-        // 重新加载或重启 fail2ban 服务
-        let reload_res = Command::new("fail2ban-client").arg("reload").output();
-        let success = match reload_res {
-            Ok(o) if o.status.success() => true,
-            _ => {
-                let restart_res = Command::new("systemctl")
-                    .args(["restart", "fail2ban"])
-                    .output();
-                matches!(restart_res, Ok(o) if o.status.success())
-            }
+        let out = if has_systemd_run {
+            Command::new("systemd-run")
+                .args([
+                    "--unit=3r-ui-sync-fail2ban",
+                    "--service-type=oneshot",
+                    "--wait",
+                    "bash",
+                    "-c",
+                    &sync_cmd,
+                ])
+                .output()
+        } else {
+            Command::new("bash").args(["-c", &sync_cmd]).output()
         };
 
-        if success {
-            Ok(())
-        } else {
-            Err("Failed to reload/restart fail2ban after updating config".to_string())
+        match out {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let out_msg = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                Err(format!("Failed to sync fail2ban config: {err} {out_msg}")
+                    .trim()
+                    .to_string())
+            }
+            Err(e) => Err(format!("Execution failed: {e}")),
         }
     })
     .await
@@ -348,12 +359,13 @@ pub async fn install_fail2ban() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
         let ssh_port = detect_ssh_port();
 
-        // 构建初始化安装并在 Debian 12 上修复 backend=systemd 的安装指令
+        // 构建初始化安装并在 Debian 12 上修复 backend=systemd 及缺少 rsyslog/iptables 的安装指令
         let install_script = format!(
             r#"set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y fail2ban python3-systemd
+apt-get install -y fail2ban python3-systemd rsyslog iptables
+systemctl enable --now rsyslog 2>/dev/null || true
 mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /var/run/fail2ban /run/fail2ban
 
 cat <<'EOF' > /etc/fail2ban/filter.d/3r-ui.conf
@@ -363,14 +375,8 @@ failregex = ^.*\[SECURITY\] Web login failed for user='.*' from ip='<HOST>'.*$
 ignoreregex =
 EOF
 
-# 修复 Debian 12 默认自带 defaults-debian.conf 因缺少 auth.log 崩溃的问题
-if [ -f /etc/fail2ban/jail.d/defaults-debian.conf ]; then
-cat <<'EOF' > /etc/fail2ban/jail.d/defaults-debian.conf
-[sshd]
-enabled = true
-backend = systemd
-EOF
-fi
+# 移除 Debian 12 默认自带易导致冲突的 defaults-debian.conf
+rm -f /etc/fail2ban/jail.d/defaults-debian.conf
 
 # 写入全局 jail.local (优先级最高，确保 backend=systemd)
 cat <<EOF > /etc/fail2ban/jail.local

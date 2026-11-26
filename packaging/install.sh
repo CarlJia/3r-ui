@@ -101,7 +101,7 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 MISSING_PKGS=()
-for pkg in curl tar ca-certificates fail2ban python3-systemd; do
+for pkg in curl tar ca-certificates fail2ban python3-systemd rsyslog iptables; do
     if ! command -v "$pkg" >/dev/null 2>&1 && ! dpkg -s "$pkg" >/dev/null 2>&1; then
         MISSING_PKGS+=("$pkg")
     fi
@@ -112,6 +112,7 @@ if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
     apt-get update -y
     apt-get install -y "${MISSING_PKGS[@]}"
 fi
+systemctl enable --now rsyslog 2>/dev/null || true
 
 # 5. Directory layout
 INSTALL_DIR="/usr/local/bin"
@@ -271,14 +272,8 @@ EOF
     SSH_PORT=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || true)
     [[ -z "$SSH_PORT" ]] && SSH_PORT="22"
 
-    # Fix Debian 12 defaults-debian.conf crash (Debian 12 lacks rsyslog /var/log/auth.log by default)
-    if [[ -f "/etc/fail2ban/jail.d/defaults-debian.conf" ]]; then
-        cat <<'EOF' > /etc/fail2ban/jail.d/defaults-debian.conf
-[sshd]
-enabled = true
-backend = systemd
-EOF
-    fi
+    # Remove Debian default conflicting jail file
+    rm -f /etc/fail2ban/jail.d/defaults-debian.conf
 
     # Configure global /etc/fail2ban/jail.local (highest priority, ensures backend = systemd across jails)
     cat <<EOF > /etc/fail2ban/jail.local
