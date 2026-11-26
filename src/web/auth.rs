@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use crate::crypto::password;
 use crate::crypto::session::{new_csrf_token, new_session_token, now_unix};
 use crate::db::models::{Admin, Inbound};
-use crate::web::middleware::{csrf_from_cookies, BasePath, CurrentAdmin, SECURITY_HEADERS};
+use crate::web::middleware::{csrf_from_cookies, BasePath, ClientIp, CurrentAdmin, SECURITY_HEADERS};
 use crate::web::{AppState, CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL_SECS};
 
 #[derive(Template)]
@@ -91,9 +91,11 @@ pub async fn login_submit(
     State(state): State<AppState>,
     jar: CookieJar,
     base_path_ext: Option<Extension<BasePath>>,
+    client_ip_ext: Option<Extension<ClientIp>>,
     axum::extract::Form(form): axum::extract::Form<LoginForm>,
 ) -> Response {
     let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
+    let client_ip = client_ip_ext.map(|Extension(ip)| ip.0).unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let admin = sqlx::query_as::<_, Admin>(
         "SELECT id, username, password_hash, created_at FROM admins WHERE username = ?",
     )
@@ -108,6 +110,14 @@ pub async fn login_submit(
         .is_some_and(|a| password::verify(&form.password, &a.password_hash));
 
     if !valid {
+        // [SECURITY] 审计日志：输出结构化安全登录失败日志，供 Fail2ban filter.d/3r-ui.conf 精准匹配与封禁
+        tracing::warn!(
+            target: "security",
+            "[SECURITY] Web login failed for user='{}' from ip='{}'",
+            form.username,
+            client_ip
+        );
+
         // Re-render with an error rather than redirecting, so the operator can
         // retry immediately. The generic message avoids disclosing whether the
         // username exists.

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 use crate::crypto::session::now_unix;
+use crate::security::fail2ban::Fail2banStatus;
 use crate::web::middleware::{csrf_from_cookies, render_page, CurrentAdmin};
 use crate::web::AppState;
 use crate::xray::DownloadProgress;
@@ -135,6 +136,24 @@ pub async fn settings_page(
     let csrf = csrf_from_cookies(&jar);
     let certs_dir = data_dir.join("certs").display().to_string();
 
+    let fail2ban = crate::security::fail2ban::get_status().await;
+    let security = sqlx::query_as::<_, crate::db::models::SecuritySettings>(
+        "SELECT id, fail2ban_enabled, ssh_protection, web_protection, maxretry, findtime_secs, bantime_secs, whitelist_ips, updated_at FROM security_settings WHERE id = 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(crate::db::models::SecuritySettings {
+        id: 1,
+        fail2ban_enabled: 1,
+        ssh_protection: 1,
+        web_protection: 1,
+        maxretry: 5,
+        findtime_secs: 600,
+        bantime_secs: 86400,
+        whitelist_ips: "127.0.0.1/8, ::1".to_string(),
+        updated_at: 0,
+    });
+
     let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let form_action = if base_path.is_empty() {
         "/admin/settings/xray/update".to_string()
@@ -154,6 +173,8 @@ pub async fn settings_page(
         jobs,
         form_action,
         base_path,
+        fail2ban,
+        security,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -257,6 +278,8 @@ struct SettingsTemplate {
     jobs: Vec<JobRowView>,
     form_action: String,
     base_path: String,
+    fail2ban: Fail2banStatus,
+    security: crate::db::models::SecuritySettings,
 }
 
 #[derive(Template)]
@@ -859,6 +882,108 @@ pub async fn certs_dir_json(
 ) -> Response {
     let view = crate::proxy::cert::scan_certs_dir(&state.config.data_dir);
     (StatusCode::OK, axum::Json(view)).into_response()
+}
+
+/// `GET /admin/settings/fail2ban/status` — JSON API for Fail2ban status
+pub async fn fail2ban_status_api(
+    State(_state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+) -> Response {
+    let status = crate::security::fail2ban::get_status().await;
+    axum::Json(status).into_response()
+}
+
+/// Unban form
+#[derive(Deserialize)]
+pub struct UnbanForm {
+    pub csrf: String,
+    pub jail: String,
+    pub ip: String,
+}
+
+/// `POST /admin/settings/fail2ban/unban` — unban an IP from a jail
+pub async fn fail2ban_unban_api(
+    State(_state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    axum::extract::Form(form): axum::extract::Form<UnbanForm>,
+) -> Response {
+    let expected = csrf_from_cookies(&jar);
+    if !crate::crypto::session::constant_time_eq(&expected, &form.csrf) {
+        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+    }
+
+    match crate::security::fail2ban::unban_ip(&form.jail, &form.ip).await {
+        Ok(()) => (StatusCode::OK, "unbanned successfully").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("failed: {e}")).into_response(),
+    }
+}
+
+/// `POST /admin/settings/fail2ban/install` — install fail2ban
+pub async fn fail2ban_install_api(
+    State(_state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    axum::extract::Form(form): axum::extract::Form<UpdateForm>,
+) -> Response {
+    let expected = csrf_from_cookies(&jar);
+    if !crate::crypto::session::constant_time_eq(&expected, &form.csrf) {
+        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+    }
+
+    match crate::security::fail2ban::install_fail2ban().await {
+        Ok(msg) => (StatusCode::OK, msg).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Form for saving security settings
+#[derive(Deserialize)]
+pub struct SecuritySettingsForm {
+    pub csrf: String,
+    pub fail2ban_enabled: Option<String>,
+    pub ssh_protection: Option<String>,
+    pub web_protection: Option<String>,
+    pub maxretry: Option<i64>,
+    pub findtime_secs: Option<i64>,
+    pub bantime_secs: Option<i64>,
+    pub whitelist_ips: Option<String>,
+}
+
+/// `POST /admin/settings/security` — save security and fail2ban configuration
+pub async fn save_security_settings(
+    State(state): State<AppState>,
+    Extension(_admin): Extension<CurrentAdmin>,
+    jar: CookieJar,
+    axum::extract::Form(form): axum::extract::Form<SecuritySettingsForm>,
+) -> Response {
+    let expected = csrf_from_cookies(&jar);
+    if !crate::crypto::session::constant_time_eq(&expected, &form.csrf) {
+        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
+    }
+
+    let fail2ban_enabled = if form.fail2ban_enabled.is_some() { 1 } else { 0 };
+    let ssh_protection = if form.ssh_protection.is_some() { 1 } else { 0 };
+    let web_protection = if form.web_protection.is_some() { 1 } else { 0 };
+    let maxretry = form.maxretry.unwrap_or(5);
+    let findtime_secs = form.findtime_secs.unwrap_or(600);
+    let bantime_secs = form.bantime_secs.unwrap_or(86400);
+    let whitelist_ips = form.whitelist_ips.unwrap_or_else(|| "127.0.0.1/8, ::1".to_string());
+
+    let _ = sqlx::query(
+        "UPDATE security_settings SET fail2ban_enabled = ?, ssh_protection = ?, web_protection = ?, maxretry = ?, findtime_secs = ?, bantime_secs = ?, whitelist_ips = ?, updated_at = unixepoch() WHERE id = 1",
+    )
+    .bind(fail2ban_enabled)
+    .bind(ssh_protection)
+    .bind(web_protection)
+    .bind(maxretry)
+    .bind(findtime_secs)
+    .bind(bantime_secs)
+    .bind(whitelist_ips)
+    .execute(&state.pool)
+    .await;
+
+    Redirect::to("/admin/settings").into_response()
 }
 
 /// Query parameters for downloading a public certificate

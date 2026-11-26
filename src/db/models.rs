@@ -168,6 +168,34 @@ impl ProxySettings {
     }
 }
 
+/// 系统安全与 Fail2ban 设置（单例，id = 1）
+#[derive(Debug, Clone, FromRow, serde::Serialize, serde::Deserialize)]
+pub struct SecuritySettings {
+    pub id: i64,
+    pub fail2ban_enabled: i64,
+    pub ssh_protection: i64,
+    pub web_protection: i64,
+    pub maxretry: i64,
+    pub findtime_secs: i64,
+    pub bantime_secs: i64,
+    pub whitelist_ips: String,
+    pub updated_at: i64,
+}
+
+impl SecuritySettings {
+    pub fn is_fail2ban_enabled(&self) -> bool {
+        self.fail2ban_enabled == 1
+    }
+
+    pub fn is_ssh_protected(&self) -> bool {
+        self.ssh_protection == 1
+    }
+
+    pub fn is_web_protected(&self) -> bool {
+        self.web_protection == 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

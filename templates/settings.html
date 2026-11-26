@@ -115,6 +115,112 @@
   <main>
 
     <section class="card">
+      <h2>安全与 Fail2ban 防爆破</h2>
+      <p class="hint">防御 Linux 主机 SSH 端口及 3R-UI Web 控制台的暴力破解与撞库攻击，支持自动封禁与一键解封。</p>
+
+      <form method="post" action="{{ base_path }}/admin/settings/security">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" name="fail2ban_enabled" value="1" {% if security.is_fail2ban_enabled() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+            <span>启用 Fail2ban 防护</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" name="ssh_protection" value="1" {% if security.is_ssh_protected() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+            <span>保护 SSH 端口 (sshd jail)</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" name="web_protection" value="1" {% if security.is_web_protected() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+            <span>保护 Web 控制台 (3r-ui jail)</span>
+          </label>
+        </div>
+
+        <dl style="margin-bottom: 16px;">
+          <dt>Fail2ban 状态</dt>
+          <dd>
+            {% if fail2ban.running %}
+              <span class="status-badge status-badge-succeeded" style="background: #10b981; color: #fff;">运行中 (Running)</span>
+            {% else if fail2ban.installed %}
+              <span class="status-badge status-badge-failed" style="background: #f59e0b; color: #fff;">已安装未启动 (Stopped)</span>
+            {% else %}
+              <span class="status-badge status-badge-failed" style="background: #ef4444; color: #fff;">未安装 (Not Installed)</span>
+              <button type="button" class="btn btn-secondary" onclick="installFail2ban()" style="padding: 2px 8px; font-size: 12px; margin-left: 8px;">一键安装</button>
+            {% endif %}
+          </dd>
+          
+          <dt>最大重试次数 (maxretry)</dt>
+          <dd>
+            <input type="number" name="maxretry" value="{{ security.maxretry }}" min="1" max="50" style="max-width: 140px; margin-bottom: 0;">
+          </dd>
+
+          <dt>失败统计窗口 (秒)</dt>
+          <dd>
+            <input type="number" name="findtime_secs" value="{{ security.findtime_secs }}" min="30" max="86400" style="max-width: 140px; margin-bottom: 0;">
+          </dd>
+
+          <dt>封禁时长 (秒)</dt>
+          <dd>
+            <input type="number" name="bantime_secs" value="{{ security.bantime_secs }}" min="60" max="2592000" style="max-width: 140px; margin-bottom: 0;">
+          </dd>
+
+          <dt>IP 白名单 (ignoreip)</dt>
+          <dd>
+            <input type="text" name="whitelist_ips" value="{{ security.whitelist_ips }}" placeholder="127.0.0.1/8, ::1, 你的管理IP" style="margin-bottom: 0;">
+            <div style="font-size: 12px; opacity: .65; margin-top: 4px;">加入白名单的 IP 永远不会被封禁，防止管理员误封自锁。</div>
+          </dd>
+        </dl>
+
+        <button type="submit" class="btn btn-primary" style="margin-bottom: 20px;">保存安全配置</button>
+      </form>
+
+      {% if fail2ban.running && !fail2ban.jails.is_empty() %}
+      <h3 style="font-size: 14px; margin: 16px 0 8px;">活跃 Jail 与被封禁 IP 列表</h3>
+      <div style="overflow-x: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Jail 名称</th>
+              <th>当前封禁数</th>
+              <th>累计封禁数</th>
+              <th>已封禁 IP 列表</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for jail in fail2ban.jails %}
+            <tr>
+              <td><strong>{{ jail.name }}</strong></td>
+              <td>{{ jail.currently_banned }}</td>
+              <td>{{ jail.total_banned }}</td>
+              <td>
+                {% if jail.banned_ips.is_empty() %}
+                  <span style="opacity: .6;">无被封禁 IP</span>
+                {% else %}
+                  {% for ip in jail.banned_ips %}
+                    <span style="display: inline-flex; align-items: center; gap: 4px; background: rgba(239,68,68,0.1); color: #ef4444; padding: 2px 6px; border-radius: 4px; margin: 2px; font-family: monospace;">
+                      {{ ip }}
+                      <a href="javascript:void(0)" onclick="unbanIp('{{ jail.name }}', '{{ ip }}')" style="color: #ef4444; text-decoration: none; font-weight: bold; margin-left: 4px;" title="解除封禁">&times;</a>
+                    </span>
+                  {% endfor %}
+                {% endif %}
+              </td>
+              <td>
+                {% if !jail.banned_ips.is_empty() %}
+                  <span style="opacity: .6;">点击 IP 右侧 &times; 单独解封</span>
+                {% else %}
+                  <span style="opacity: .4;">-</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="card">
       <h2>当前环境</h2>
       <p class="hint">以下信息只读，展示当前 xray 运行环境的路径与版本。</p>
       <dl>
@@ -263,6 +369,43 @@
         }, 2000);
       });
     });
+
+    function unbanIp(jail, ip) {
+      if (!confirm("确定要解封 IP " + ip + " 吗？")) return;
+      var formData = new URLSearchParams();
+      formData.append("csrf", "{{ csrf }}");
+      formData.append("jail", jail);
+      formData.append("ip", ip);
+      fetch("{{ base_path }}/admin/settings/fail2ban/unban", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: formData.toString()
+      }).then(function(r) {
+        if (r.ok) {
+          location.reload();
+        } else {
+          r.text().then(function(t) { alert("解封失败: " + t); });
+        }
+      });
+    }
+
+    function installFail2ban() {
+      if (!confirm("确定要调用系统包管理器自动安装 fail2ban 吗？")) return;
+      var formData = new URLSearchParams();
+      formData.append("csrf", "{{ csrf }}");
+      fetch("{{ base_path }}/admin/settings/fail2ban/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: formData.toString()
+      }).then(function(r) {
+        if (r.ok) {
+          alert("安装指令已触发，正在刷新页面...");
+          location.reload();
+        } else {
+          r.text().then(function(t) { alert("安装失败: " + t); });
+        }
+      });
+    }
   </script>
 </body>
 </html>

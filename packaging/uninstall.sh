@@ -106,6 +106,13 @@ if [[ -f "$INSTALL_BIN" ]]; then
     rm -f "$INSTALL_BIN"
 fi
 
+# 7. Remove 3R-UI Fail2ban jail and filter configs if present
+if [[ -f "/etc/fail2ban/jail.d/3r-ui.conf" || -f "/etc/fail2ban/filter.d/3r-ui.conf" ]]; then
+    info "Removing 3R-UI Fail2ban configuration..."
+    rm -f "/etc/fail2ban/jail.d/3r-ui.conf" "/etc/fail2ban/filter.d/3r-ui.conf"
+    systemctl restart fail2ban 2>/dev/null || true
+fi
+
 # 7. Clean data, configs and logs if requested
 CONF_DIR="/etc/3r-ui"
 DATA_DIR="/var/lib/3r-ui"

@@ -43,6 +43,37 @@ pub fn base_path_from_headers(headers: &axum::http::HeaderMap) -> String {
         .unwrap_or_default()
 }
 
+/// 客户端真实 IP 地址包装结构体，存储在请求 Extension 中
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientIp(pub std::net::IpAddr);
+
+impl std::fmt::Display for ClientIp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// 从请求头中提取真实客户端 IP（支持 X-Forwarded-For, X-Real-IP 等，回退至 127.0.0.1）
+pub fn extract_client_ip(headers: &axum::http::HeaderMap) -> std::net::IpAddr {
+    // 优先读取 X-Forwarded-For: client, proxy1, proxy2
+    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = forwarded_for.split(',').next() {
+            if let Ok(ip) = first.trim().parse::<std::net::IpAddr>() {
+                return ip;
+            }
+        }
+    }
+
+    // 其次读取 X-Real-IP
+    if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        if let Ok(ip) = real_ip.trim().parse::<std::net::IpAddr>() {
+            return ip;
+        }
+    }
+
+    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+}
+
 /// 全局前缀处理中间件：
 /// 1. 识别 `X-Forwarded-Prefix` 或根据数据库中配置的 `proxy_settings.path` 自动适配请求路径；
 /// 2. 若请求 URI 带有自定义 path 前缀，自动剥离前缀以便 Axum 路由正常匹配；
@@ -101,6 +132,9 @@ pub async fn base_path_middleware(
     }
 
     request.extensions_mut().insert(BasePath(base_path.clone()));
+
+    let client_ip = extract_client_ip(request.headers());
+    request.extensions_mut().insert(ClientIp(client_ip));
 
     let mut response = next.run(request).await;
 
