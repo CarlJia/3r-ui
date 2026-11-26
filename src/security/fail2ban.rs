@@ -192,13 +192,220 @@ pub async fn unban_ip(jail: &str, ip: &str) -> Result<(), String> {
     .unwrap_or_else(|e| Err(format!("Task spawn error: {e}")))
 }
 
+/// 自动探测系统的 SSH 监听端口 (优先 `sshd -T`，其次读取 `/etc/ssh/sshd_config`，兜底 22)
+pub fn detect_ssh_port() -> u16 {
+    if let Ok(out) = Command::new("sshd").args(["-T"]).output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            for line in s.lines() {
+                let trimmed = line.trim();
+                if let Some(port_str) = trimmed.strip_prefix("port ") {
+                    if let Ok(port) = port_str.trim().parse::<u16>() {
+                        return port;
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(content) = std::fs::read_to_string("/etc/ssh/sshd_config") {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some(port_str) = trimmed.strip_prefix("Port ") {
+                if let Ok(port) = port_str.trim().parse::<u16>() {
+                    return port;
+                }
+            }
+        }
+    }
+    22
+}
+
+/// 生成 `/etc/fail2ban/jail.local` 配置内容
+pub fn generate_jail_config(
+    settings: &crate::db::models::SecuritySettings,
+    ssh_port: u16,
+) -> String {
+    let mut ips = vec!["127.0.0.1/8".to_string(), "::1".to_string()];
+    for item in settings.whitelist_ips.split([',', ' ']) {
+        let trimmed = item.trim();
+        if !trimmed.is_empty() && trimmed != "127.0.0.1/8" && trimmed != "::1" {
+            ips.push(trimmed.to_string());
+        }
+    }
+    let ignoreip = ips.join(" ");
+    let maxretry = settings.maxretry.max(1);
+    let findtime = settings.findtime_secs.max(60);
+    let bantime = settings.bantime_secs.max(60);
+    let ssh_enabled = if settings.is_fail2ban_enabled() && settings.is_ssh_protected() {
+        "true"
+    } else {
+        "false"
+    };
+    let web_enabled = if settings.is_fail2ban_enabled() && settings.is_web_protected() {
+        "true"
+    } else {
+        "false"
+    };
+
+    format!(
+        r#"# 3R-UI Fail2ban Configuration
+# Automatically managed by 3R-UI.
+
+[DEFAULT]
+backend = systemd
+ignoreip = {ignoreip}
+bantime = {bantime}s
+findtime = {findtime}s
+maxretry = {maxretry}
+
+[sshd]
+enabled = {ssh_enabled}
+port = {ssh_port}
+backend = systemd
+maxretry = {maxretry}
+bantime = {bantime}s
+
+[3r-ui]
+enabled = {web_enabled}
+port = 8443,http,https
+filter = 3r-ui
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=3r-ui.service + SYSLOG_IDENTIFIER=3r-ui
+maxretry = {maxretry}
+findtime = {findtime}s
+bantime = {bantime}s
+"#
+    )
+}
+
+/// 3R-UI 专属 filter 定义内容
+pub const FILTER_3R_UI: &str = r#"# Fail2ban filter for 3R-UI Web Console
+[Definition]
+failregex = ^.*\[SECURITY\] Web login failed for user='.*' from ip='<HOST>'.*$
+ignoreregex =
+"#;
+
+/// 将当前安全配置同步写入 Fail2ban 配置并重启服务
+pub async fn sync_fail2ban_config(
+    settings: &crate::db::models::SecuritySettings,
+) -> Result<(), String> {
+    let settings = settings.clone();
+    tokio::task::spawn_blocking(move || {
+        if which_fail2ban().is_none() {
+            return Ok(());
+        }
+
+        let ssh_port = detect_ssh_port();
+        let jail_content = generate_jail_config(&settings, ssh_port);
+
+        // 确保目录存在
+        let _ = std::fs::create_dir_all("/etc/fail2ban/filter.d");
+        let _ = std::fs::create_dir_all("/etc/fail2ban/jail.d");
+
+        // 写入 3r-ui filter
+        if let Err(e) = std::fs::write("/etc/fail2ban/filter.d/3r-ui.conf", FILTER_3R_UI) {
+            tracing::warn!("Failed to write /etc/fail2ban/filter.d/3r-ui.conf: {e}");
+        }
+
+        // 解决 Debian 12 缺少 rsyslog 导致 defaults-debian.conf backend=auto 启动崩溃的问题
+        if std::path::Path::new("/etc/fail2ban/jail.d/defaults-debian.conf").exists() {
+            let debian_fix = "[sshd]\nenabled = true\nbackend = systemd\n";
+            let _ = std::fs::write("/etc/fail2ban/jail.d/defaults-debian.conf", debian_fix);
+        }
+
+        // 写入主配置 /etc/fail2ban/jail.local (优先级高于 jail.d/*.conf，实现全局覆盖)
+        if let Err(e) = std::fs::write("/etc/fail2ban/jail.local", jail_content) {
+            return Err(format!("Failed to write /etc/fail2ban/jail.local: {e}"));
+        }
+
+        // 重新加载或重启 fail2ban 服务
+        let reload_res = Command::new("fail2ban-client").arg("reload").output();
+        let success = match reload_res {
+            Ok(o) if o.status.success() => true,
+            _ => {
+                let restart_res = Command::new("systemctl")
+                    .args(["restart", "fail2ban"])
+                    .output();
+                matches!(restart_res, Ok(o) if o.status.success())
+            }
+        };
+
+        if success {
+            Ok(())
+        } else {
+            Err("Failed to reload/restart fail2ban after updating config".to_string())
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("Task spawn error: {e}")))
+}
+
 /// 自动安装并配置 Fail2ban (调用系统包管理器)
 pub async fn install_fail2ban() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
-        // 由于 3r-ui.service 启用了 systemd 安全加固沙箱 (ProtectSystem=strict)，
-        // 当前进程内部无法直接向 /var/lib/dpkg /usr /etc 等系统目录执行 apt-get 写入操作。
-        // 因此优先使用 `systemd-run` 创建临时的 host 级别 oneshot service 运行安装指令；
-        // 若系统不支持 systemd-run，则回退执行直接安装。
+        let ssh_port = detect_ssh_port();
+
+        // 构建初始化安装并在 Debian 12 上修复 backend=systemd 的安装指令
+        let install_script = format!(
+            r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y fail2ban python3-systemd
+mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d /var/run/fail2ban /run/fail2ban
+
+cat <<'EOF' > /etc/fail2ban/filter.d/3r-ui.conf
+# Fail2ban filter for 3R-UI Web Console
+[Definition]
+failregex = ^.*\[SECURITY\] Web login failed for user='.*' from ip='<HOST>'.*$
+ignoreregex =
+EOF
+
+# 修复 Debian 12 默认自带 defaults-debian.conf 因缺少 auth.log 崩溃的问题
+if [ -f /etc/fail2ban/jail.d/defaults-debian.conf ]; then
+cat <<'EOF' > /etc/fail2ban/jail.d/defaults-debian.conf
+[sshd]
+enabled = true
+backend = systemd
+EOF
+fi
+
+# 写入全局 jail.local (优先级最高，确保 backend=systemd)
+cat <<EOF > /etc/fail2ban/jail.local
+# 3R-UI Fail2ban Configuration
+[DEFAULT]
+backend = systemd
+ignoreip = 127.0.0.1/8 ::1
+bantime = 1d
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+port = {ssh_port}
+backend = systemd
+maxretry = 3
+bantime = 1d
+
+[3r-ui]
+enabled = true
+port = 8443,http,https
+filter = 3r-ui
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=3r-ui.service + SYSLOG_IDENTIFIER=3r-ui
+maxretry = 5
+findtime = 10m
+bantime = 1d
+EOF
+
+systemctl daemon-reload
+systemctl enable fail2ban
+systemctl restart fail2ban
+"#
+        );
+
         let has_systemd_run = Command::new("which")
             .arg("systemd-run")
             .output()
@@ -213,35 +420,53 @@ pub async fn install_fail2ban() -> Result<String, String> {
                     "--wait",
                     "bash",
                     "-c",
-                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban python3-systemd && mkdir -p /var/run/fail2ban /run/fail2ban && systemctl daemon-reload && systemctl enable fail2ban && systemctl restart fail2ban",
+                    &install_script,
                 ])
                 .output()
                 .map_err(|e| format!("systemd-run failed: {e}"))?
         } else {
             Command::new("bash")
-                .args([
-                    "-c",
-                    "DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban python3-systemd && mkdir -p /var/run/fail2ban /run/fail2ban && systemctl daemon-reload && systemctl enable fail2ban && systemctl restart fail2ban",
-                ])
+                .args(["-c", &install_script])
                 .output()
-                .map_err(|e| format!("apt-get install fail2ban failed: {e}"))?
+                .map_err(|e| format!("install fail2ban failed: {e}"))?
         };
 
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             let out_str = String::from_utf8_lossy(&out.stdout);
-            return Err(format!("{err}\n{out_str}").trim().to_string());
+            // 抓取失败时的 fail2ban 状态和日志协助定位
+            let journal = Command::new("journalctl")
+                .args(["-u", "fail2ban", "-n", "20", "--no-pager"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+
+            return Err(format!("{err}\n{out_str}\nJournal:\n{journal}")
+                .trim()
+                .to_string());
         }
 
-        // 重新启动服务
-        let _ = Command::new("systemctl")
-            .args(["enable", "fail2ban"])
-            .output();
-        let _ = Command::new("systemctl")
-            .args(["restart", "fail2ban"])
-            .output();
+        // 校验 fail2ban 服务状态
+        let status = Command::new("systemctl")
+            .args(["is-active", "--quiet", "fail2ban"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
 
-        Ok("Fail2ban 安装成功并已自动启动。".to_string())
+        if status {
+            Ok(format!(
+                "Fail2ban 安装并配置成功，已成功启动守护进程（SSH 端口：{ssh_port}）。"
+            ))
+        } else {
+            let journal = Command::new("journalctl")
+                .args(["-u", "fail2ban", "-n", "20", "--no-pager"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+            Err(format!(
+                "Fail2ban 已安装，但启动失败，日志输出：\n{journal}"
+            ))
+        }
     })
     .await
     .unwrap_or_else(|e| Err(format!("Task error: {e}")))
@@ -299,5 +524,29 @@ Status for the jail: sshd
         assert_eq!(st.currently_banned, 2);
         assert_eq!(st.total_banned, 3);
         assert_eq!(st.banned_ips, vec!["192.168.1.100", "10.0.0.50"]);
+    }
+
+    #[test]
+    fn test_generate_jail_config() {
+        let settings = crate::db::models::SecuritySettings {
+            id: 1,
+            fail2ban_enabled: 1,
+            ssh_protection: 1,
+            web_protection: 1,
+            maxretry: 3,
+            findtime_secs: 300,
+            bantime_secs: 3600,
+            whitelist_ips: "1.2.3.4, 5.6.7.8".to_string(),
+            updated_at: 0,
+        };
+
+        let conf = generate_jail_config(&settings, 2222);
+        assert!(conf.contains("backend = systemd"));
+        assert!(conf.contains("ignoreip = 127.0.0.1/8 ::1 1.2.3.4 5.6.7.8"));
+        assert!(conf.contains("port = 2222"));
+        assert!(conf.contains("bantime = 3600s"));
+        assert!(conf.contains("maxretry = 3"));
+        assert!(conf.contains("[3r-ui]"));
+        assert!(conf.contains("enabled = true"));
     }
 }

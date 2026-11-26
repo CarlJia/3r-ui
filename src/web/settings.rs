@@ -985,9 +985,25 @@ pub async fn save_security_settings(
     .bind(maxretry)
     .bind(findtime_secs)
     .bind(bantime_secs)
-    .bind(whitelist_ips)
+    .bind(&whitelist_ips)
     .execute(&state.pool)
     .await;
+
+    // 同步配置到 Fail2ban 守护进程（若已安装）
+    let updated_settings = crate::db::models::SecuritySettings {
+        id: 1,
+        fail2ban_enabled,
+        ssh_protection,
+        web_protection,
+        maxretry,
+        findtime_secs,
+        bantime_secs,
+        whitelist_ips,
+        updated_at: 0,
+    };
+    if let Err(e) = crate::security::fail2ban::sync_fail2ban_config(&updated_settings).await {
+        tracing::warn!("Failed to sync fail2ban config: {e}");
+    }
 
     Redirect::to("/admin/settings").into_response()
 }

@@ -271,10 +271,20 @@ EOF
     SSH_PORT=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || true)
     [[ -z "$SSH_PORT" ]] && SSH_PORT="22"
 
-    # Configure jail for sshd and 3r-ui
-    cat <<EOF > /etc/fail2ban/jail.d/3r-ui.conf
+    # Fix Debian 12 defaults-debian.conf crash (Debian 12 lacks rsyslog /var/log/auth.log by default)
+    if [[ -f "/etc/fail2ban/jail.d/defaults-debian.conf" ]]; then
+        cat <<'EOF' > /etc/fail2ban/jail.d/defaults-debian.conf
+[sshd]
+enabled = true
+backend = systemd
+EOF
+    fi
+
+    # Configure global /etc/fail2ban/jail.local (highest priority, ensures backend = systemd across jails)
+    cat <<EOF > /etc/fail2ban/jail.local
 # 3R-UI Fail2ban Jail Configuration
 [DEFAULT]
+backend = systemd
 ignoreip = 127.0.0.1/8 ::1
 bantime = 1d
 findtime = 10m
@@ -298,6 +308,7 @@ findtime = 10m
 bantime = 1d
 EOF
 
+    systemctl daemon-reload 2>/dev/null || true
     systemctl restart fail2ban 2>/dev/null || true
     systemctl enable fail2ban 2>/dev/null || true
     success "Fail2ban protection configured for SSH (port $SSH_PORT) and 3R-UI."
