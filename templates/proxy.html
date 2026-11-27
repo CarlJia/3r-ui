@@ -97,42 +97,39 @@
   </header>
   <main>
 
-    <!-- 反向代理与 HTTPS 域名访问 (Pingora) -->
-    <section class="card">
-      <h2>反向代理与 HTTPS 域名访问 (Pingora)</h2>
-      <p class="hint">启用 Pingora 内置反向代理以支持域名及自动化 HTTPS 访问 3R-UI 面板，无需前置安装 Nginx 或 Caddy。</p>
-      <form method="post" action="{{ base_path }}/admin/proxy">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
+    <form method="post" action="{{ base_path }}/admin/proxy">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+
+      <!-- 反向代理与 HTTPS 域名访问 (Pingora) -->
+      <section class="card">
+        <h2>反向代理设置 (Pingora)</h2>
+        <p class="hint">启用 Pingora 内置反向代理以支持域名及自动化 HTTPS 访问 3R-UI 面板，无需前置安装 Nginx 或 Caddy。<br>
+          <span style="color: #3b82f6;">💡 提示：如果您使用 NAT VPS、端口受限机器或纯节点服务器，无需开启反向代理，只需在下方“SSL 证书管理”中配置证书即可服务于 Hysteria 2 等入站。</span>
+        </p>
 
         <div style="margin-bottom: 14px;">
           <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
             <input type="checkbox" name="enabled" value="true" {% if proxy.enabled %}checked{% endif %} style="width: auto; margin-bottom: 0;">
-            <span>启用反向代理服务</span>
+            <span style="font-weight: 600;">启用反向代理服务</span>
           </label>
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
           <div>
-            <label for="domain">访问域名 (FQDN)</label>
-            <input type="text" id="domain" name="domain" value="{{ proxy.domain }}" placeholder="例如: panel.example.com">
-          </div>
-          <div>
             <label for="listen_port">监听端口 (默认 8443)</label>
             <input type="number" id="listen_port" name="listen_port" value="{{ proxy.listen_port }}" min="1" max="65535" required>
           </div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 14px;">
           <div>
             <label for="path">面板访问路径 (Path)</label>
             <input type="text" id="path" name="path" value="{{ proxy.path }}" placeholder="例如: /xxjjye (留空表示根路径)">
             <p class="hint" style="margin-top: -8px; font-size: 12px;">自定义管理后台访问路径。设置后仅能通过此路径登录，直接访问根路径将返回 404。</p>
           </div>
-          <div>
-            <label for="sub_path">订阅访问路径 (Sub Path)</label>
-            <input type="text" id="sub_path" name="sub_path" value="{{ proxy.sub_path }}" placeholder="默认: /sub">
-            <p class="hint" style="margin-top: -8px; font-size: 12px;">自定义客户端订阅拉取路径。默认通过 /sub/:token 订阅。</p>
-          </div>
+        </div>
+
+        <div style="margin-bottom: 14px;">
+          <label for="sub_path">订阅访问路径 (Sub Path)</label>
+          <input type="text" id="sub_path" name="sub_path" value="{{ proxy.sub_path }}" placeholder="默认: /sub">
+          <p class="hint" style="margin-top: -8px; font-size: 12px;">自定义客户端订阅拉取路径。默认通过 /sub/:token 订阅。</p>
         </div>
 
         {% if proxy.enabled && !proxy.domain.is_empty() %}
@@ -141,11 +138,23 @@
           <div style="margin-top: 4px; font-size: 12px; opacity: 0.75;">保存自定义路径后，请务必使用完整访问入口进行登录与管理。</div>
         </div>
         {% endif %}
+      </section>
+
+      <!-- SSL 证书管理 (ACME DNS-01 / 本地证书) -->
+      <section class="card">
+        <h2>SSL 证书管理 (ACME DNS-01 / 本地证书)</h2>
+        <p class="hint">配置并管理用于节点协议（如 Hysteria 2）及面板反向代理的 TLS 证书。无论是否开启上方反向代理，此处申请与管理的证书均会自动生效并持续自动续期。</p>
+
+        <div style="margin-bottom: 14px;">
+          <label for="domain">主绑定域名 (FQDN)</label>
+          <input type="text" id="domain" name="domain" value="{{ proxy.domain }}" placeholder="例如: node.example.com">
+          <p class="hint" style="margin-top: -8px; font-size: 12px;">此域名将作为 ACME 证书申请的目标域名，同时作为 Hysteria 2 节点（auto 模式）及反代优先绑定的正式域名。</p>
+        </div>
 
         <div style="margin-bottom: 14px;">
           <label for="cert_mode">证书管理模式</label>
           <select id="cert_mode" name="cert_mode" style="width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px; border: 1px solid #d5d9de; margin-bottom: 14px;">
-            <option value="cf_dns" {% if proxy.cert_mode == "cf_dns" %}selected{% endif %}>Cloudflare DNS 自动化申请与续期 (DNS-01 验证)</option>
+            <option value="cf_dns" {% if proxy.cert_mode == "cf_dns" %}selected{% endif %}>Cloudflare DNS 自动化申请与续期 (DNS-01 验证，支持 80 端口受限/NAT 机器)</option>
             <option value="custom" {% if proxy.cert_mode == "custom" %}selected{% endif %}>自定义证书文件路径 (本地 PEM)</option>
           </select>
         </div>
@@ -175,17 +184,26 @@
           {% endmatch %}
         </div>
 
-        <div style="display: flex; gap: 12px; align-items: center;">
-          <button class="btn btn-primary" type="submit">保存代理配置</button>
+        <div style="display: flex; gap: 12px; align-items: center; margin-top: 14px;">
+          <button class="btn btn-primary" type="submit">保存全部配置</button>
         </div>
-      </form>
+      </section>
+    </form>
+
+    <section class="card" style="margin-top: -4px;">
+      <h2>证书签发与操作</h2>
+      <p class="hint">保存上方域名与 Cloudflare API Token 后，可在此随时手动触发证书申请或强制更新。签发过程将在后台通过 DNS TXT 记录验证，无需开放 80/443 端口。</p>
 
       {% if proxy.cert_mode == "cf_dns" && !proxy.domain.is_empty() %}
-      <form method="post" action="{{ base_path }}/admin/proxy/request-cert" style="margin-top: 12px;" id="request-cert-form">
+      <form method="post" action="{{ base_path }}/admin/proxy/request-cert" id="request-cert-form">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button class="btn btn-secondary" type="submit" id="request-cert-btn">立即申请 / 强制续期证书</button>
-        <span class="hint" style="margin-left: 8px; vertical-align: middle;">将触发后台 ACME DNS-01 验证与证书下载，完成后自动热重载</span>
+        <span class="hint" style="margin-left: 8px; vertical-align: middle;">将触发后台 ACME DNS-01 验证与证书下载并持久化保存</span>
       </form>
+      {% else %}
+      <div style="font-size: 13px; opacity: 0.7;">
+        <span>请先在上方配置主绑定域名与 Cloudflare API Token 并保存后，方可在此触发申请。</span>
+      </div>
       {% endif %}
 
       <!-- 实时证书申请进度与日志卡片 -->

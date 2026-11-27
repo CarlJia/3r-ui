@@ -4,6 +4,23 @@
 
 ---
 
+## [v0.0.4] - 2026-11-27
+
+### ✨ 新增功能 (Features)
+
+- **反向代理与证书管理完全解耦**：
+  - 将证书自动续期检测与签发逻辑（ACME DNS-01）彻底脱离反代 `enabled` 开关限制，解决 NAT VPS 或未启用反代服务器因无法申请正规证书而导致 Hysteria 2 节点连接超时的问题。
+  - 前端 `/admin/proxy` 页面重构，将“反向代理设置”与“SSL 证书管理”拆分为独立模块，支持独立配置、保存与手动强制续期。
+  - Hysteria 2 入站无缝支持继承主域名证书，避免退回自签 Fallback 证书。
+- **Cloudflare DDNS 动态域名同步**：
+  - 新增 Cloudflare DDNS 自动化后台任务，支持多网卡 IPv4/IPv6 探测及定时同步至 Cloudflare DNS 记录。
+- **Cloudflare Tunnels 穿透支持**：
+  - 支持内嵌 Cloudflare Quick Tunnels / Named Tunnels，实现免公网 IP 安全访问面板与节点服务。
+- **系统设置与状态监控扩展**：
+  - 新增系统环境、Xray 核心版本在线检查更新及高级安全设置项。
+
+---
+
 ## [v0.0.3] - 2026-11-26
 
 ### ✨ 新增功能 (Features)

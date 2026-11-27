@@ -429,8 +429,9 @@ pub async fn run_renewal_loop(
             }
         };
 
-        if !settings.is_enabled()
-            || settings.cert_mode != "cf_dns"
+        // 无论反代是否开启，只要配置了域名和 Cloudflare Token，均执行证书自动续期检测与维护，
+        // 以便服务于 Hysteria 2 等依赖正规 TLS 证书的入站协议（特别是 NAT VPS 场景）。
+        if settings.cert_mode != "cf_dns"
             || settings.domain.is_empty()
             || settings.cf_api_token.is_empty()
         {
@@ -478,11 +479,14 @@ pub async fn run_renewal_loop(
                     tracing::info!(
                         domain = %domain,
                         expires_at = expires_at,
-                        "automatic certificate renewal succeeded, reloading proxy"
+                        "automatic certificate renewal succeeded"
                     );
-                    let _ = proxy_tx_clone
-                        .send(crate::proxy::supervisor::ProxyCommand::Reload)
-                        .await;
+                    if settings.is_enabled() {
+                        tracing::info!("reloading Pingora reverse proxy after certificate renewal");
+                        let _ = proxy_tx_clone
+                            .send(crate::proxy::supervisor::ProxyCommand::Reload)
+                            .await;
+                    }
                 }
                 Err(e) => {
                     let err_msg = format!("ACME 自动续期失败: {e}");
@@ -672,5 +676,43 @@ mod tests {
         let (cp, kp) = resolve_inbound_cert(temp_dir.path(), &inbound, None).unwrap();
         assert!(cp.exists());
         assert!(kp.exists());
+    }
+
+    #[test]
+    fn resolve_inbound_cert_uses_domain_cert_when_available() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let domain = "panel.example.com";
+        let (cert_pem, key_pem) = generate_self_signed_cert(domain).unwrap();
+        save_cert_files(temp_dir.path(), domain, &cert_pem, &key_pem).unwrap();
+
+        let inbound = crate::db::models::Inbound {
+            id: 2,
+            listen_ip: "0.0.0.0".into(),
+            listen_port: 8443,
+            dest: "".into(),
+            sni: "".into(),
+            server_name: None,
+            private_key: "".into(),
+            public_key: "".into(),
+            short_id: "".into(),
+            xhttp_path: None,
+            protocol: "hysteria2".into(),
+            cert_mode: "auto".into(),
+            custom_cert_path: "".into(),
+            custom_key_path: "".into(),
+            masquerade_url: "".into(),
+            port_range: "".into(),
+            transport_protocol: "TCP".into(),
+            skip_cert_verify: 0,
+            udp: 1,
+            status: "active".into(),
+            created_at: None,
+            updated_at: None,
+        };
+
+        // 即使没有反向代理开启标志（仅传入配置的 domain），也直接命中已签发的 domain 证书
+        let (cp, kp) = resolve_inbound_cert(temp_dir.path(), &inbound, Some(domain)).unwrap();
+        assert_eq!(cp, cert_path(temp_dir.path(), domain));
+        assert_eq!(kp, key_path(temp_dir.path(), domain));
     }
 }

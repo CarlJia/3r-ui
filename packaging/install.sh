@@ -197,6 +197,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 DATA_DIR=/var/lib/3r-ui
 LOG_DIR=/var/log/3r-ui
 BIND_ADDR=127.0.0.1:2053
+# PUBLIC_HOST is optional (can be configured in Web Console or auto-detected)
 PUBLIC_HOST=
 XRAY_DOWNLOAD_BASE=https://api.github.com
 STATS_INTERVAL_SECS=30

@@ -56,7 +56,7 @@ GITHUB_REPO="CarlJia/3r-ui"
 BIND_ADDR="127.0.0.1:2053"
 
 # 客户端订阅与分享链接使用的节点外网域名或 IP (例如: vpn.example.com)
-# 如果留空，面板将提示配置，或者使用 VPS_HOST
+# 可选：如果留空，面板将自动使用 VPS_HOST / 自动探测的公网 IP，亦可在 Web 控制台「系统设置」随时修改
 PUBLIC_HOST=""
 
 # Xray-core 下载镜像源 (默认官方 API，国内 VPS 可改为加速代理源)

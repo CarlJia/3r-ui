@@ -34,11 +34,14 @@ pub struct AppState {
     pub supervisor_tx: tokio::sync::mpsc::Sender<SupervisorCommand>,
     pub proxy_tx: tokio::sync::mpsc::Sender<crate::proxy::ProxyCommand>,
     pub mieru_tx: tokio::sync::mpsc::Sender<crate::mieru::MieruCommand>,
+    pub tunnel_tx: tokio::sync::mpsc::Sender<crate::tunnel::TunnelCommand>,
+    pub tunnel_supervisor: Arc<crate::tunnel::CloudflaredSupervisor>,
     /// In-flight and recent xray-update job statuses.
     pub update_jobs: Arc<Mutex<HashMap<String, JobStatus>>>,
     pub installer: Arc<Installer>,
     pub cert_tracker: Arc<crate::proxy::CertProgressTracker>,
     pub system_tracker: Arc<system::SystemTracker>,
+    pub ddns_notifier: crate::ddns::DdnsNotifier,
     /// Set to true before sending `Stop` to the supervisor; background update
     /// tasks check this before taking actions that require a live supervisor.
     pub shutdown_initiated: Arc<std::sync::atomic::AtomicBool>,
@@ -116,6 +119,32 @@ pub fn router(state: AppState) -> Router {
             post(settings::trigger_update),
         )
         .route("/admin/settings/xray/status", get(settings::update_status))
+        .route(
+            "/admin/settings/system",
+            post(settings::save_system_settings),
+        )
+        .route("/admin/settings/detect-ip", get(settings::detect_ip_api))
+        .route("/admin/settings/ddns", post(settings::save_ddns_settings))
+        .route(
+            "/admin/settings/ddns/sync",
+            post(settings::trigger_ddns_sync),
+        )
+        .route(
+            "/admin/settings/ddns/status",
+            get(settings::ddns_status_api),
+        )
+        .route(
+            "/admin/settings/tunnel",
+            post(settings::save_tunnel_settings),
+        )
+        .route(
+            "/admin/settings/tunnel/action",
+            post(settings::tunnel_action_api),
+        )
+        .route(
+            "/admin/settings/tunnel/status",
+            get(settings::tunnel_status_api),
+        )
         .route(
             "/admin/settings/security",
             post(settings::save_security_settings),

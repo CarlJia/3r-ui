@@ -98,6 +98,11 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_TARGET="$2"
             shift 2
             ;;
+        -H*)
+            IS_HOST_MODE=true
+            CUSTOM_TARGET="${1#-H}"
+            shift
+            ;;
         --host=*)
             IS_HOST_MODE=true
             CUSTOM_TARGET="${1#*=}"
@@ -105,17 +110,28 @@ while [[ $# -gt 0 ]]; do
             ;;
         -p|--port)
             [[ $# -ge 2 ]] || die "缺少参数: $1 需要指定端口号"
+            [[ "$2" =~ ^[0-9]+$ ]] || die "端口号格式无效: $2"
             CUSTOM_PORT="$2"
             shift 2
             ;;
+        -p*)
+            CUSTOM_PORT="${1#-p}"
+            [[ -n "$CUSTOM_PORT" && "$CUSTOM_PORT" =~ ^[0-9]+$ ]] || die "端口号格式无效: $1"
+            shift
+            ;;
         --port=*)
             CUSTOM_PORT="${1#*=}"
+            [[ -n "$CUSTOM_PORT" && "$CUSTOM_PORT" =~ ^[0-9]+$ ]] || die "端口号格式无效: $1"
             shift
             ;;
         -a|--arch)
             [[ $# -ge 2 ]] || die "缺少参数: $1 需要指定架构 (x86_64 或 aarch64)"
             CUSTOM_ARCH="$2"
             shift 2
+            ;;
+        -a*)
+            CUSTOM_ARCH="${1#-a}"
+            shift
             ;;
         --arch=*)
             CUSTOM_ARCH="${1#*=}"
@@ -332,12 +348,131 @@ say "压缩二进制包..."
 GZ_BIN="$(mktemp -t 3r-ui-upload).gz"
 cleanup_upload() { rm -f "$GZ_BIN"; }
 trap cleanup_upload EXIT
-gzip -9 -c "$TARGET_BIN" > "$GZ_BIN"
-RAW_SIZE="$(du -h "$TARGET_BIN" | cut -f1 | tr -d ' ')"
-GZ_SIZE="$(du -h "$GZ_BIN" | cut -f1 | tr -d ' ')"
+# 使用 -n 忽略时间戳与文件名，保证二进制未变时每次压缩产物的字节流与哈希 100% 确定可复现
+gzip -9 -n -c "$TARGET_BIN" > "$GZ_BIN"
+RAW_SIZE="$(python3 -c "import os, sys; print(f'{os.path.getsize(sys.argv[1])/1024/1024:.1f}MB')" "$TARGET_BIN")"
+GZ_SIZE="$(python3 -c "import os, sys; print(f'{os.path.getsize(sys.argv[1])/1024/1024:.1f}MB')" "$GZ_BIN")"
 say "原始大小 ${RAW_SIZE} -> 压缩后 ${GZ_SIZE}"
 say "上传压缩包到 ${VPS_CONN}..."
-run_scp "$GZ_BIN" "${VPS_CONN}:/tmp/3r-ui.test.tmp.gz"
+
+upload_with_progress() {
+    local src="$1"
+    local dest_remote="$2"
+    local remote_tmp="/tmp/3r-ui.test.tmp.gz"
+    local remote_meta="/tmp/3r-ui.test.meta"
+    
+    # 优先使用 python3 进行带断点续传、百分比、传输量和实时速度的流式上传
+    if command -v python3 >/dev/null 2>&1; then
+        # 1. 计算本地文件的 SHA-256 和大小
+        local file_info
+        file_info="$(python3 -c "
+import sys, os, hashlib
+p = sys.argv[1]
+size = os.path.getsize(p)
+with open(p, 'rb') as f:
+    h = hashlib.sha256(f.read()).hexdigest()
+print(f'{size} {h}')
+" "$src")"
+        local local_size="${file_info%% *}"
+        local local_hash="${file_info##* }"
+
+        # 2. 检查远端是否已存在部分文件及 meta 信息
+        local remote_offset=0
+        local check_output
+        check_output="$(run_ssh "$dest_remote" "
+if [ -f '$remote_meta' ] && [ -f '$remote_tmp' ]; then
+    read -r m_size m_hash < '$remote_meta' 2>/dev/null || true
+    if [ \"\\\$m_hash\" = '$local_hash' ]; then
+        stat -c '%s' '$remote_tmp' 2>/dev/null || stat -f '%z' '$remote_tmp' 2>/dev/null || wc -c < '$remote_tmp'
+    else
+        rm -f '$remote_tmp' '$remote_meta'
+        echo '0'
+    fi
+else
+    echo '0'
+fi
+" 2>/dev/null | tr -d '\r\n' || echo "0")"
+
+        if [[ "$check_output" =~ ^[0-9]+$ ]] && [ "$check_output" -gt 0 ]; then
+            if [ "$check_output" -ge "$local_size" ]; then
+                say "远端已存在完整且哈希匹配的压缩包 (${GZ_SIZE})，直接跳过上传！"
+                return 0
+            fi
+            remote_offset="$check_output"
+            local offset_mb
+            offset_mb="$(python3 -c "import sys; print(f'{int(sys.argv[1])/1024/1024:.1f}MB')" "$remote_offset")"
+            say "检测到未完成的上传，触发断点续传 (从 ${offset_mb} / ${GZ_SIZE} 处继续)..."
+        else
+            # 记录当前版本的 meta 信息用于下次续传校验
+            run_ssh "$dest_remote" "echo '${local_size} ${local_hash}' > '$remote_meta'" 2>/dev/null || true
+        fi
+
+        # 3. 从 offset 开始流式传输并追加写入远端文件
+        python3 -c "
+import sys, os, time, signal
+
+def on_sigint(sig, frame):
+    sys.stderr.write('\n\033[0;33m[TEST-DEPLOY]\033[0m 上传已中断 (已保留断点进度，下次执行将自动续传)。\n')
+    sys.stderr.flush()
+    # 使用 os._exit(130) 直接终止进程，跳过 Python 运行时的 stdout flush 与清理钩子，避免 Exception ignored
+    os._exit(130)
+
+signal.signal(signal.SIGINT, on_sigint)
+
+src_path = sys.argv[1]
+offset = int(sys.argv[2])
+total = os.path.getsize(src_path)
+sent = offset
+t0 = time.time()
+last_print = 0
+
+try:
+    with open(src_path, 'rb') as f:
+        if offset > 0:
+            f.seek(offset)
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            try:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            except (BrokenPipeError, IOError):
+                os._exit(1)
+            sent += len(chunk)
+            now = time.time()
+            if now - last_print >= 0.2 or sent == total:
+                elapsed = max(now - t0, 0.001)
+                # 计算当前阶段的即时传输速率
+                speed = ((sent - offset) / elapsed) / 1024 / 1024
+                pct = int(sent * 100 / total)
+                mb_sent = sent / 1024 / 1024
+                mb_total = total / 1024 / 1024
+                bar_len = 20
+                filled = int(bar_len * sent / total)
+                bar = '=' * filled + '>' if filled < bar_len else '=' * bar_len
+                bar = bar.ljust(bar_len)
+                tag = '续传进度' if offset > 0 else '上传进度'
+                sys.stderr.write(f'\r\033[0;34m[TEST-DEPLOY]\033[0m {tag}: [{bar}] {pct:3d}% ({mb_sent:4.1f}MB / {mb_total:4.1f}MB, {speed:4.1f} MB/s)')
+                sys.stderr.flush()
+                last_print = now
+    sys.stderr.write('\n')
+except KeyboardInterrupt:
+    on_sigint(None, None)
+" "$src" "$remote_offset" | run_ssh "$dest_remote" "cat >> '$remote_tmp'" || {
+            local exit_code=$?
+            if [ $exit_code -eq 130 ]; then
+                exit 130
+            fi
+            die "上传中断或失败 (错误码 $exit_code)"
+        }
+    else
+        # 没有 python3 时退回到原始 scp
+        run_scp "$src" "${dest_remote}:${remote_tmp}"
+    fi
+}
+
+upload_with_progress "$GZ_BIN" "${VPS_CONN}"
 ok "上传成功。"
 
 # 3. 远程热更服务

@@ -24,6 +24,7 @@ struct Harness {
 }
 
 async fn boot() -> Harness {
+    std::env::set_var("THREE_R_UI_NO_IP_DETECT", "1");
     let dir = tempdir().unwrap();
     let mut config = AppConfig::from_env().unwrap();
     config.data_dir = dir.path().to_path_buf();
@@ -45,13 +46,21 @@ async fn boot() -> Harness {
     tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
     let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
+    let (tunnel_tx, mut tunnel_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while tunnel_rx.recv().await.is_some() {} });
 
+    let tunnel_supervisor = std::sync::Arc::new(three_r_ui::tunnel::CloudflaredSupervisor::new(
+        pool.clone(),
+        &config.data_dir,
+    ));
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
         proxy_tx,
         mieru_tx,
+        tunnel_tx,
+        tunnel_supervisor,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
@@ -59,6 +68,7 @@ async fn boot() -> Harness {
         ),
         cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
+        ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
@@ -223,12 +233,21 @@ async fn detail_page_warns_when_public_host_is_unset() {
     tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
     let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
+    let (tunnel_tx, mut tunnel_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while tunnel_rx.recv().await.is_some() {} });
+
+    let tunnel_supervisor = std::sync::Arc::new(three_r_ui::tunnel::CloudflaredSupervisor::new(
+        pool.clone(),
+        &config.data_dir,
+    ));
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
         proxy_tx,
         mieru_tx,
+        tunnel_tx,
+        tunnel_supervisor,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
@@ -236,6 +255,7 @@ async fn detail_page_warns_when_public_host_is_unset() {
         ),
         cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
+        ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let app = web::router(state);
@@ -251,6 +271,17 @@ async fn detail_page_warns_when_public_host_is_unset() {
     let html = body_text(resp).await;
     assert!(html.contains("PUBLIC_HOST"));
     assert!(html.contains("your-server.example.com"));
+
+    // Verify updating system_settings in DB removes the warning and embeds the new host
+    sqlx::query("UPDATE system_settings SET public_host = 'custom-db.example.com' WHERE id = 1")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let resp2 = get(&h, &format!("/admin/clients/{new_id}"), &session).await;
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let html2 = body_text(resp2).await;
+    assert!(!html2.contains("PUBLIC_HOST"));
+    assert!(html2.contains("custom-db.example.com"));
     let _ = id;
 }
 
