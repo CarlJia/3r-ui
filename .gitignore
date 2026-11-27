@@ -21,6 +21,7 @@ scripts/deploy.conf
 
 # IDE & Editor files
 .idea/
+.openidea/
 .run/
 .vscode/
 *.iml

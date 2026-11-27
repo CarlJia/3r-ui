@@ -215,6 +215,114 @@ impl SecuritySettings {
     }
 }
 
+#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct SystemSettings {
+    pub id: i64,
+    pub public_host: String,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct DdnsSettings {
+    pub id: i64,
+    pub enabled: i64,
+    pub cf_api_token: String,
+    pub ipv4_enabled: i64,
+    pub ipv4_domains: String,
+    pub ipv6_enabled: i64,
+    pub ipv6_domains: String,
+    pub check_interval_mins: i64,
+    pub cf_proxied: i64,
+    pub auto_sync_public_host: i64,
+    pub last_ipv4: String,
+    pub last_ipv6: String,
+    pub last_sync_at: i64,
+    pub last_status: String,
+    pub updated_at: i64,
+}
+
+impl DdnsSettings {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled == 1
+    }
+
+    pub fn is_ipv4_enabled(&self) -> bool {
+        self.ipv4_enabled == 1
+    }
+
+    pub fn is_ipv6_enabled(&self) -> bool {
+        self.ipv6_enabled == 1
+    }
+
+    pub fn is_cf_proxied(&self) -> bool {
+        self.cf_proxied == 1
+    }
+
+    pub fn is_auto_sync_public_host(&self) -> bool {
+        self.auto_sync_public_host == 1
+    }
+
+    pub fn masked_token(&self) -> String {
+        if self.cf_api_token.is_empty() {
+            "".to_string()
+        } else if self.cf_api_token.len() <= 8 {
+            "********".to_string()
+        } else {
+            format!(
+                "{}***{}",
+                &self.cf_api_token[..3],
+                &self.cf_api_token[self.cf_api_token.len() - 4..]
+            )
+        }
+    }
+
+    pub fn parse_ipv4_domains(&self) -> Vec<String> {
+        Self::parse_domains(&self.ipv4_domains)
+    }
+
+    pub fn parse_ipv6_domains(&self) -> Vec<String> {
+        Self::parse_domains(&self.ipv6_domains)
+    }
+
+    fn parse_domains(raw: &str) -> Vec<String> {
+        raw.split([',', '\n', '\r', ';'])
+            .map(|s| s.trim().trim_end_matches('.').to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+}
+
+/// Cloudflare Tunnels (cloudflared) 守护配置与状态（单例，id = 1）
+#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct TunnelSettings {
+    pub id: i64,
+    pub enabled: i64,
+    pub tunnel_token: String,
+    pub custom_path: String,
+    pub last_status: String,
+    pub updated_at: i64,
+}
+
+impl TunnelSettings {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled == 1
+    }
+
+    pub fn masked_token(&self) -> String {
+        if self.tunnel_token.is_empty() {
+            "".to_string()
+        } else if self.tunnel_token.len() <= 8 {
+            "********".to_string()
+        } else {
+            format!(
+                "{}***{}",
+                &self.tunnel_token[..3],
+                &self.tunnel_token[self.tunnel_token.len() - 4..]
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +418,69 @@ mod tests {
 
         // Empty token
         assert_eq!(settings.full_sub_url(""), "https://jp2.856668.xyz/mysub");
+    }
+
+    #[test]
+    fn test_ddns_settings_masking_and_domains() {
+        let mut ddns = DdnsSettings {
+            id: 1,
+            enabled: 1,
+            cf_api_token: "sk-1234567890abcdef".to_string(),
+            ipv4_enabled: 1,
+            ipv4_domains: "vps1.example.com, vps2.example.com.\n vps3.example.com; ".to_string(),
+            ipv6_enabled: 0,
+            ipv6_domains: "".to_string(),
+            check_interval_mins: 5,
+            cf_proxied: 0,
+            auto_sync_public_host: 1,
+            last_ipv4: "1.2.3.4".to_string(),
+            last_ipv6: "".to_string(),
+            last_sync_at: 100,
+            last_status: "Success".to_string(),
+            updated_at: 100,
+        };
+
+        assert!(ddns.is_enabled());
+        assert!(ddns.is_ipv4_enabled());
+        assert!(!ddns.is_ipv6_enabled());
+        assert!(!ddns.is_cf_proxied());
+        assert!(ddns.is_auto_sync_public_host());
+
+        assert_eq!(ddns.masked_token(), "sk-***cdef");
+        ddns.cf_api_token = "short".to_string();
+        assert_eq!(ddns.masked_token(), "********");
+        ddns.cf_api_token = "".to_string();
+        assert_eq!(ddns.masked_token(), "");
+
+        let domains = ddns.parse_ipv4_domains();
+        assert_eq!(
+            domains,
+            vec![
+                "vps1.example.com".to_string(),
+                "vps2.example.com".to_string(),
+                "vps3.example.com".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tunnel_settings_masking() {
+        let mut tunnel = TunnelSettings {
+            id: 1,
+            enabled: 1,
+            tunnel_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.token".to_string(),
+            custom_path: "".to_string(),
+            last_status: "Running".to_string(),
+            updated_at: 100,
+        };
+
+        assert!(tunnel.is_enabled());
+        assert_eq!(tunnel.masked_token(), "eyJ***oken");
+
+        tunnel.tunnel_token = "short".to_string();
+        assert_eq!(tunnel.masked_token(), "********");
+
+        tunnel.tunnel_token = "".to_string();
+        assert_eq!(tunnel.masked_token(), "");
     }
 }

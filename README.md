@@ -128,12 +128,14 @@ ufw allow 2053/tcp
 ```
 完成之后，直接在浏览器中打开：`http://<您的VPS公网IP>:2053` 即可登录。
 
-### 3. 配置 PUBLIC_HOST (节点与订阅域名)
+### 3. 配置节点连接地址 (公网 Host)
 
-为了让客户端生成的分享链接和订阅 URL 能够正常解析连接，请将您的 VPS 公网 IP 或解析域名写入环境配置：
+> **💡 提示**：3R-UI 会自动探测 VPS 公网 IP 作为默认节点连接 Host。您也可以登录 Web 面板在 **「系统设置」** 页面一键探测或随时修改节点 Host（支持公网 IP 或域名），保存后立即生效，无需修改配置文件或重启服务。
+
+如果您希望在安装阶段通过环境变量固定预设，亦可写入环境配置：
 
 ```bash
-# 自动检测 VPS 公网 IP 并写入配置
+# 自动检测 VPS 公网 IP 并写入配置 (可选)
 IP=$(curl -fsSL4 https://api.ipify.org || hostname -I | awk '{print $1}')
 sed -i "s/^PUBLIC_HOST=.*/PUBLIC_HOST=$IP/" /etc/3r-ui/3r-ui.env
 systemctl restart 3r-ui

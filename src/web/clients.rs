@@ -449,35 +449,16 @@ pub async fn detail(
 
     let first_inbound = inbounds[0].clone();
 
-    let raw_public_host = state.config.public_host.trim();
-    let warning = if raw_public_host.is_empty() {
-        Some("尚未配置 PUBLIC_HOST 环境变量，链接中的 host 占位为示例地址，客户端无法直接使用。请在面板环境配置 PUBLIC_HOST 后重新打开此页面。".to_string())
+    let effective =
+        crate::net::resolve_effective_public_host(&state.pool, &state.config.public_host).await;
+    let warning = if effective.is_fallback {
+        Some("尚未配置节点连接 Host（可在「系统设置」页面配置或设置 PUBLIC_HOST 环境变量），链接中的 host 占位为示例地址，客户端无法直接使用。请在系统设置中配置节点连接地址后重新打开此页面。".to_string())
     } else {
         None
     };
 
-    // Determine scheme and bare host (stripping any accidental leading http:// or https://)
-    let (sub_scheme, bare_host) = if raw_public_host.starts_with("https://") {
-        (
-            "https",
-            raw_public_host
-                .trim_start_matches("https://")
-                .trim_matches('/'),
-        )
-    } else if raw_public_host.starts_with("http://") {
-        (
-            "http",
-            raw_public_host
-                .trim_start_matches("http://")
-                .trim_matches('/'),
-        )
-    } else if raw_public_host.is_empty() {
-        ("http", "your-server.example.com")
-    } else {
-        ("http", raw_public_host.trim_matches('/'))
-    };
-
-    let host = bare_host.to_string();
+    let sub_scheme = effective.scheme;
+    let host = effective.host;
 
     let proxy_settings = crate::proxy::config::get_proxy_settings(&state.pool)
         .await
@@ -578,32 +559,16 @@ pub async fn qr_png(
         }
     };
 
-    let raw_config_host = state.config.public_host.trim();
-    let (sub_scheme, default_host) = if raw_config_host.starts_with("https://") {
-        (
-            "https",
-            raw_config_host
-                .trim_start_matches("https://")
-                .trim_matches('/'),
-        )
-    } else if raw_config_host.starts_with("http://") {
-        (
-            "http",
-            raw_config_host
-                .trim_start_matches("http://")
-                .trim_matches('/'),
-        )
-    } else if raw_config_host.is_empty() {
-        ("http", "your-server.example.com")
-    } else {
-        ("http", raw_config_host.trim_matches('/'))
-    };
+    let effective =
+        crate::net::resolve_effective_public_host(&state.pool, &state.config.public_host).await;
+    let sub_scheme = effective.scheme;
+    let default_host = effective.host;
 
     let host = params
         .get("host")
         .cloned()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| default_host.to_string());
+        .unwrap_or(default_host);
 
     let uri = if params.contains_key("sub") {
         let tok = client.sub_token.clone().unwrap_or_default();

@@ -40,6 +40,55 @@ struct CfZone {
     name: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CfDnsRecord {
+    pub id: String,
+    pub zone_id: Option<String>,
+    #[serde(rename = "type")]
+    pub record_type: String,
+    pub name: String,
+    pub content: String,
+    #[serde(default)]
+    pub proxied: bool,
+    #[serde(default)]
+    pub ttl: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DnsSyncOutcome {
+    Created {
+        domain: String,
+        ip: String,
+    },
+    Updated {
+        domain: String,
+        old_ip: String,
+        new_ip: String,
+    },
+    Unchanged {
+        domain: String,
+        ip: String,
+    },
+    Skipped {
+        domain: String,
+        reason: String,
+    },
+    Failed {
+        domain: String,
+        error: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct CreateOrUpdateDnsRecordRequest<'a> {
+    #[serde(rename = "type")]
+    record_type: &'a str,
+    name: &'a str,
+    content: &'a str,
+    ttl: u32,
+    proxied: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct CreateDnsRecordRequest<'a> {
     #[serde(rename = "type")]
@@ -323,6 +372,223 @@ impl CloudflareClient {
         }
         Ok(false)
     }
+
+    /// 查询指定 Zone 下符合指定域名与类型的 DNS 记录列表
+    pub async fn list_dns_records(
+        &self,
+        zone_id: &str,
+        record_type: &str,
+        name: &str,
+    ) -> AppResult<Vec<CfDnsRecord>> {
+        let clean_name = name.trim().trim_end_matches('.');
+        let url = format!(
+            "{}/zones/{zone_id}/dns_records?type={record_type}&name={clean_name}",
+            self.base_url
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.api_token)
+            .send()
+            .await
+            .map_err(|e| AppError::Proxy(format!("failed to query Cloudflare DNS records: {e}")))?;
+
+        let status = resp.status();
+        let parsed: CfApiResponse<Vec<CfDnsRecord>> = resp.json().await.map_err(|e| {
+            AppError::Proxy(format!(
+                "failed to parse Cloudflare list DNS records response: {e}"
+            ))
+        })?;
+
+        if !parsed.success {
+            let err_msg = parsed
+                .errors
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| format!("{}({})", e.message, e.code))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(AppError::Proxy(format!(
+                "Cloudflare failed to list DNS records (status {status}): {err_msg}"
+            )));
+        }
+
+        Ok(parsed.result.unwrap_or_default())
+    }
+
+    /// 在指定 Zone 中创建 DNS 记录 (A 或 AAAA)
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_dns_record(
+        &self,
+        zone_id: &str,
+        record_type: &str,
+        name: &str,
+        content: &str,
+        proxied: bool,
+        ttl: u32,
+    ) -> AppResult<String> {
+        let url = format!("{}/zones/{zone_id}/dns_records", self.base_url);
+        let req_body = CreateOrUpdateDnsRecordRequest {
+            record_type,
+            name: name.trim().trim_end_matches('.'),
+            content: content.trim(),
+            ttl,
+            proxied,
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.api_token)
+            .json(&req_body)
+            .send()
+            .await
+            .map_err(|e| AppError::Proxy(format!("failed to create Cloudflare DNS record: {e}")))?;
+
+        let status = resp.status();
+        let parsed: CfApiResponse<DnsRecordResult> = resp.json().await.map_err(|e| {
+            AppError::Proxy(format!(
+                "failed to parse Cloudflare create DNS record response: {e}"
+            ))
+        })?;
+
+        if !parsed.success {
+            let err_msg = parsed
+                .errors
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| format!("{}({})", e.message, e.code))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(AppError::Proxy(format!(
+                "Cloudflare failed to create DNS record (status {status}): {err_msg}"
+            )));
+        }
+
+        match parsed.result {
+            Some(res) => Ok(res.id),
+            None => Err(AppError::Proxy(
+                "Cloudflare returned success without DNS record id".to_string(),
+            )),
+        }
+    }
+
+    /// 更新指定 Zone 中的现有 DNS 记录
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_dns_record(
+        &self,
+        zone_id: &str,
+        record_id: &str,
+        record_type: &str,
+        name: &str,
+        content: &str,
+        proxied: bool,
+        ttl: u32,
+    ) -> AppResult<()> {
+        let url = format!("{}/zones/{zone_id}/dns_records/{record_id}", self.base_url);
+        let req_body = CreateOrUpdateDnsRecordRequest {
+            record_type,
+            name: name.trim().trim_end_matches('.'),
+            content: content.trim(),
+            ttl,
+            proxied,
+        };
+
+        let resp = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.api_token)
+            .json(&req_body)
+            .send()
+            .await
+            .map_err(|e| AppError::Proxy(format!("failed to update Cloudflare DNS record: {e}")))?;
+
+        let status = resp.status();
+        let parsed: CfApiResponse<serde_json::Value> = resp.json().await.map_err(|e| {
+            AppError::Proxy(format!(
+                "failed to parse Cloudflare update DNS record response: {e}"
+            ))
+        })?;
+
+        if !parsed.success {
+            let err_msg = parsed
+                .errors
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| format!("{}({})", e.message, e.code))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(AppError::Proxy(format!(
+                "Cloudflare failed to update DNS record (status {status}): {err_msg}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// 智能同步（Upsert）域名映射。若已有记录且 IP/代理相同则跳过，若不同则更新，若不存在则创建。
+    pub async fn upsert_dns_record(
+        &self,
+        domain: &str,
+        record_type: &str,
+        ip: &str,
+        proxied: bool,
+    ) -> AppResult<DnsSyncOutcome> {
+        let clean_domain = domain.trim().trim_end_matches('.');
+        let clean_ip = ip.trim();
+        if clean_domain.is_empty() {
+            return Ok(DnsSyncOutcome::Skipped {
+                domain: domain.to_string(),
+                reason: "domain is empty".to_string(),
+            });
+        }
+        if clean_ip.is_empty() {
+            return Ok(DnsSyncOutcome::Skipped {
+                domain: clean_domain.to_string(),
+                reason: "ip is empty".to_string(),
+            });
+        }
+
+        let zone_id = self.get_zone_id(clean_domain).await?;
+        let existing_records = self
+            .list_dns_records(&zone_id, record_type, clean_domain)
+            .await?;
+
+        if let Some(existing) = existing_records
+            .into_iter()
+            .find(|r| r.name.eq_ignore_ascii_case(clean_domain))
+        {
+            if existing.content == clean_ip && existing.proxied == proxied {
+                return Ok(DnsSyncOutcome::Unchanged {
+                    domain: clean_domain.to_string(),
+                    ip: clean_ip.to_string(),
+                });
+            }
+
+            self.update_dns_record(
+                &zone_id,
+                &existing.id,
+                record_type,
+                clean_domain,
+                clean_ip,
+                proxied,
+                1,
+            )
+            .await?;
+            Ok(DnsSyncOutcome::Updated {
+                domain: clean_domain.to_string(),
+                old_ip: existing.content,
+                new_ip: clean_ip.to_string(),
+            })
+        } else {
+            self.create_dns_record(&zone_id, record_type, clean_domain, clean_ip, proxied, 1)
+                .await?;
+            Ok(DnsSyncOutcome::Created {
+                domain: clean_domain.to_string(),
+                ip: clean_ip.to_string(),
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -442,5 +708,135 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dns_record_crud_and_upsert() {
+        let mock_server = MockServer::start().await;
+
+        // Subdomain zone not found
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "vps.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Root zone found
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{ "id": "zone-ddns-123", "name": "example.com" }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // First query: no record exists
+        Mock::given(method("GET"))
+            .and(path("/zones/zone-ddns-123/dns_records"))
+            .and(query_param("type", "A"))
+            .and(query_param("name", "vps.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        // Create record
+        Mock::given(method("POST"))
+            .and(path("/zones/zone-ddns-123/dns_records"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": { "id": "rec-a-1" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cf = CloudflareClient::new("cf-secret-token".into()).with_endpoints(
+            mock_server.uri(),
+            format!("{}/dns-query", mock_server.uri()),
+        );
+
+        // Upsert should create record
+        let outcome1 = cf
+            .upsert_dns_record("vps.example.com", "A", "203.0.113.1", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome1,
+            DnsSyncOutcome::Created {
+                domain: "vps.example.com".to_string(),
+                ip: "203.0.113.1".to_string()
+            }
+        );
+
+        // Second query: record exists with 203.0.113.1
+        Mock::given(method("GET"))
+            .and(path("/zones/zone-ddns-123/dns_records"))
+            .and(query_param("type", "A"))
+            .and(query_param("name", "vps.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{
+                    "id": "rec-a-1",
+                    "type": "A",
+                    "name": "vps.example.com",
+                    "content": "203.0.113.1",
+                    "proxied": false,
+                    "ttl": 1
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Upsert with same IP should be Unchanged
+        let outcome2 = cf
+            .upsert_dns_record("vps.example.com", "A", "203.0.113.1", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome2,
+            DnsSyncOutcome::Unchanged {
+                domain: "vps.example.com".to_string(),
+                ip: "203.0.113.1".to_string()
+            }
+        );
+
+        // Update record mock
+        Mock::given(method("PUT"))
+            .and(path("/zones/zone-ddns-123/dns_records/rec-a-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": { "id": "rec-a-1" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Upsert with new IP should be Updated
+        let outcome3 = cf
+            .upsert_dns_record("vps.example.com", "A", "203.0.113.2", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome3,
+            DnsSyncOutcome::Updated {
+                domain: "vps.example.com".to_string(),
+                old_ip: "203.0.113.1".to_string(),
+                new_ip: "203.0.113.2".to_string()
+            }
+        );
     }
 }

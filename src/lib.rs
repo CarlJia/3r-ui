@@ -1,6 +1,7 @@
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod ddns;
 pub mod error;
 pub mod mieru;
 pub mod net;
@@ -8,6 +9,7 @@ pub mod proxy;
 pub mod quota;
 pub mod security;
 pub mod share;
+pub mod tunnel;
 pub mod web;
 pub mod xray;
 
@@ -28,6 +30,8 @@ pub struct Services {
     pub supervisor_tx: mpsc::Sender<xray::SupervisorCommand>,
     pub proxy_tx: mpsc::Sender<proxy::ProxyCommand>,
     pub mieru_tx: mpsc::Sender<mieru::MieruCommand>,
+    pub tunnel_tx: mpsc::Sender<tunnel::TunnelCommand>,
+    pub tunnel_supervisor: Arc<tunnel::CloudflaredSupervisor>,
     shutdown_initiated: Arc<std::sync::atomic::AtomicBool>,
     supervisor_handle: tokio::task::JoinHandle<()>,
     http_handle: tokio::task::JoinHandle<()>,
@@ -36,8 +40,11 @@ pub struct Services {
     prune_handle: tokio::task::JoinHandle<()>,
     proxy_handle: tokio::task::JoinHandle<()>,
     renewal_handle: tokio::task::JoinHandle<()>,
+    ddns_handle: tokio::task::JoinHandle<()>,
     #[allow(dead_code)]
     mieru_handle: tokio::task::JoinHandle<()>,
+    #[allow(dead_code)]
+    tunnel_handle: tokio::task::JoinHandle<()>,
 }
 
 impl Services {
@@ -50,14 +57,18 @@ impl Services {
         let _ = self.supervisor_tx.send(xray::SupervisorCommand::Stop).await;
         let _ = self.proxy_tx.send(proxy::ProxyCommand::Stop).await;
         let _ = self.mieru_tx.send(mieru::MieruCommand::Stop).await;
+        let _ = self.tunnel_tx.send(tunnel::TunnelCommand::Stop).await;
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(10), self.supervisor_handle).await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), self.proxy_handle).await;
         self.renewal_handle.abort();
+        self.ddns_handle.abort();
         self.stats_handle.abort();
         self.logs_handle.abort();
         self.prune_handle.abort();
         self.http_handle.abort();
+        self.mieru_handle.abort();
+        self.tunnel_handle.abort();
     }
 }
 
@@ -140,16 +151,30 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     ));
     let mieru_handle = tokio::spawn(mieru_supervisor.run(mieru_rx));
 
+    let ddns_notifier = ddns::DdnsNotifier::new();
+    let ddns_handle = tokio::spawn(ddns::run_ddns_loop(pool.clone(), ddns_notifier.clone()));
+
+    // Cloudflare Tunnel supervisor
+    let (tunnel_tx, tunnel_rx) = mpsc::channel::<tunnel::TunnelCommand>(16);
+    let tunnel_supervisor = Arc::new(tunnel::CloudflaredSupervisor::new(
+        pool.clone(),
+        &config.data_dir,
+    ));
+    let tunnel_handle = tokio::spawn(tunnel_supervisor.clone().run(tunnel_rx));
+
     let app_state = web::AppState {
         config: config.clone(),
         pool: pool.clone(),
         supervisor_tx: supervisor_tx.clone(),
         proxy_tx: proxy_tx.clone(),
         mieru_tx: mieru_tx.clone(),
+        tunnel_tx: tunnel_tx.clone(),
+        tunnel_supervisor: tunnel_supervisor.clone(),
         update_jobs: Arc::new(Mutex::new(HashMap::new())),
         installer: installer.clone(),
         cert_tracker,
         system_tracker: Arc::new(web::system::SystemTracker::new()),
+        ddns_notifier,
         shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     // Clone the Arc handle for Services::shutdown before app_state is moved into the async block.
@@ -207,6 +232,8 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         supervisor_tx,
         proxy_tx,
         mieru_tx,
+        tunnel_tx,
+        tunnel_supervisor,
         shutdown_initiated,
         supervisor_handle,
         http_handle,
@@ -215,7 +242,9 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         prune_handle,
         proxy_handle,
         renewal_handle,
+        ddns_handle,
         mieru_handle,
+        tunnel_handle,
     })
 }
 

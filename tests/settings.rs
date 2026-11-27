@@ -53,13 +53,21 @@ async fn boot() -> Harness {
     tokio::spawn(async move { while proxy_rx.recv().await.is_some() {} });
     let (mieru_tx, mut mieru_rx) = tokio::sync::mpsc::channel(8);
     tokio::spawn(async move { while mieru_rx.recv().await.is_some() {} });
+    let (tunnel_tx, mut tunnel_rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move { while tunnel_rx.recv().await.is_some() {} });
 
+    let tunnel_supervisor = std::sync::Arc::new(three_r_ui::tunnel::CloudflaredSupervisor::new(
+        pool.clone(),
+        &config.data_dir,
+    ));
     let state = AppState {
         config: config.clone(),
         pool: pool.clone(),
         supervisor_tx: tx,
         proxy_tx,
         mieru_tx,
+        tunnel_tx,
+        tunnel_supervisor,
         update_jobs: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: Arc::new(
             three_r_ui::xray::Installer::new(config.xray_download_base.clone())
@@ -67,6 +75,7 @@ async fn boot() -> Harness {
         ),
         cert_tracker: Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: Arc::new(three_r_ui::web::system::SystemTracker::new()),
+        ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
         shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
@@ -732,6 +741,56 @@ async fn request_cert_endpoint_with_urlencoded_and_json_accept() {
         .uri("/admin/settings/proxy/cert-status")
         .header("cookie", format!("session={session}; csrf={csrf}"))
         .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_ddns_settings_and_sync_endpoints() {
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+
+    // 1. Submit DDNS form
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/ddns")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "csrf={csrf}&enabled=1&cf_api_token=valid_cf_token_12345&ipv4_enabled=1&ipv4_domains=ddns.example.com&check_interval_mins=10&auto_sync_public_host=1"
+        )))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    // Verify database row
+    let ddns = three_r_ui::ddns::config::get_ddns_settings(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(ddns.enabled, 1);
+    assert_eq!(ddns.cf_api_token, "valid_cf_token_12345");
+    assert_eq!(ddns.ipv4_domains, "ddns.example.com");
+    assert_eq!(ddns.check_interval_mins, 10);
+    assert_eq!(ddns.auto_sync_public_host, 1);
+
+    // 2. Poll DDNS status endpoint
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/settings/ddns/status")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 3. Trigger DDNS sync endpoint
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/settings/ddns/sync")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!("csrf={csrf}")))
         .unwrap();
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

@@ -34,12 +34,19 @@ async fn boot() -> (axum::Router, tempfile::TempDir, sqlx::SqlitePool) {
     let (tx, _rx) = tokio::sync::mpsc::channel(4);
     let (proxy_tx, _proxy_rx) = tokio::sync::mpsc::channel(4);
     let (mieru_tx, _mieru_rx) = tokio::sync::mpsc::channel(4);
+    let (tunnel_tx, _tunnel_rx) = tokio::sync::mpsc::channel(4);
+    let tunnel_supervisor = std::sync::Arc::new(three_r_ui::tunnel::CloudflaredSupervisor::new(
+        pool.clone(),
+        dir.path(),
+    ));
     let state = AppState {
         config,
         pool: pool.clone(),
         supervisor_tx: tx,
         proxy_tx,
         mieru_tx,
+        tunnel_tx,
+        tunnel_supervisor,
         update_jobs: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         installer: std::sync::Arc::new(
             three_r_ui::xray::Installer::new("https://github.com/3r-ui/xray/releases")
@@ -47,6 +54,7 @@ async fn boot() -> (axum::Router, tempfile::TempDir, sqlx::SqlitePool) {
         ),
         cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
+        ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     (web::router(state), dir, pool)
