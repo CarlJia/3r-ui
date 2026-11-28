@@ -50,6 +50,7 @@ async fn boot() -> Harness {
         cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
+        node_manager: std::sync::Arc::new(three_r_ui::node::NodeManager::new(pool.clone())),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
@@ -259,4 +260,221 @@ async fn sub_endpoint_decouples_cdn_domain_and_uses_inbound_listen_ip_and_server
         "Mieru link should connect to direct2.example.com: {}",
         decoded
     );
+}
+
+#[tokio::test]
+async fn sub_endpoint_serves_html_preview_to_browsers() {
+    let h = boot().await;
+
+    sqlx::query(
+        "INSERT INTO inbounds (id, listen_port, dest, sni, server_name, private_key, \
+                public_key, short_id, xhttp_path, protocol, cert_mode, status, created_at, updated_at) \
+         VALUES (1, 443, 'www.apple.com', 'www.apple.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
+                '/r/vlesspath', 'vless', 'reality', 'active', unixepoch(), unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let sub_token = "browser_sub_token_abc";
+    sqlx::query(
+        "INSERT INTO clients (id, inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, created_at) \
+         VALUES (1, 1, '11111111-2222-3333-4444-555555555555', 'alice', 10737418240, unixepoch() + 86400 * 30, 'active', ?, unixepoch())",
+    )
+    .bind(sub_token)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    // Traffic snapshot: 50MB up, 150MB down
+    sqlx::query(
+        "INSERT INTO traffic_snapshots (client_id, uplink, downlink, xray_uplink, xray_downlink, recorded_at) \
+         VALUES (1, 52428800, 157286400, 52428800, 157286400, unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sub/{sub_token}"))
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Content-Type should be HTML, without attachment disposition
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert!(content_type.contains("text/html"));
+    assert!(resp.headers().get("content-disposition").is_none());
+
+    let html = body_text(resp).await;
+    assert!(html.contains("alice"));
+    assert!(html.contains("11111111-2222-3333-4444-555555555555"));
+    assert!(html.contains("VLESS"));
+    assert!(html.contains("data:image/png;base64,"));
+    assert!(html.contains("由 3R-UI 高性能代理面板驱动"));
+}
+
+#[tokio::test]
+async fn sub_endpoint_preview_respects_forwarded_proto_https() {
+    let h = boot().await;
+
+    let sub_token = "proto_sub_token_test";
+    sqlx::query(
+        "INSERT INTO inbounds (id, listen_port, dest, sni, server_name, private_key, \
+                public_key, short_id, xhttp_path, protocol, cert_mode, status, created_at, updated_at) \
+         VALUES (1, 443, 'www.apple.com', 'www.apple.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
+                '/r/vlesspath', 'vless', 'reality', 'active', unixepoch(), unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO clients (id, inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, created_at) \
+         VALUES (1, 1, '11111111-2222-3333-4444-555555555555', 'proto_user', 10737418240, NULL, 'active', ?, unixepoch())",
+    )
+    .bind(sub_token)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    // Set public host without scheme
+    sqlx::query("UPDATE system_settings SET public_host = 'tw.856668.xyz' WHERE id = 1")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+
+    // Request with x-forwarded-proto: https
+    let req = Request::builder()
+        .uri(format!("/sub/{sub_token}?preview=1"))
+        .header("x-forwarded-proto", "https")
+        .header("host", "tw.856668.xyz")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let html = body_text(resp).await;
+    assert!(html.contains("https://tw.856668.xyz/sub/proto_sub_token_test"));
+}
+
+#[tokio::test]
+async fn sub_endpoint_serves_html_preview_with_query_param() {
+    let h = boot().await;
+
+    sqlx::query(
+        "INSERT INTO inbounds (id, listen_port, dest, sni, server_name, private_key, \
+                public_key, short_id, xhttp_path, protocol, cert_mode, status, created_at, updated_at) \
+         VALUES (1, 443, 'www.apple.com', 'www.apple.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
+                '/r/vlesspath', 'vless', 'reality', 'active', unixepoch(), unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let sub_token = "preview_param_token_xyz";
+    sqlx::query(
+        "INSERT INTO clients (id, inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, created_at) \
+         VALUES (1, 1, '33333333-4444-5555-6666-777777777777', 'bob', 0, NULL, 'active', ?, unixepoch())",
+    )
+    .bind(sub_token)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sub/{sub_token}?preview=1"))
+        .header("Accept", "*/*")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert!(content_type.contains("text/html"));
+
+    let html = body_text(resp).await;
+    assert!(html.contains("bob"));
+    assert!(html.contains("不限流量"));
+}
+
+#[tokio::test]
+async fn sub_endpoint_preserves_base64_for_proxy_clients_with_html_accept() {
+    let h = boot().await;
+
+    sqlx::query(
+        "INSERT INTO inbounds (id, listen_port, dest, sni, server_name, private_key, \
+                public_key, short_id, xhttp_path, protocol, cert_mode, status, created_at, updated_at) \
+         VALUES (1, 443, 'www.apple.com', 'www.apple.com', NULL, 'PRIV', 'PUBKEY', 'abcd', \
+                '/r/vlesspath', 'vless', 'reality', 'active', unixepoch(), unixepoch())",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let sub_token = "clash_client_token";
+    sqlx::query(
+        "INSERT INTO clients (id, inbound_id, uuid, name, quota_bytes, expiry_at, status, sub_token, created_at) \
+         VALUES (1, 1, '11111111-2222-3333-4444-555555555555', 'clashuser', 10737418240, NULL, 'active', ?, unixepoch())",
+    )
+    .bind(sub_token)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    // Client sends Accept: text/html but User-Agent is Clash
+    let req = Request::builder()
+        .uri(format!("/sub/{sub_token}"))
+        .header("Accept", "text/html,*/*")
+        .header("User-Agent", "ClashforWindows/0.20.39")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert_eq!(content_type, "text/plain; charset=utf-8");
+
+    let disp = resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert!(disp.contains("attachment"));
+
+    assert!(resp.headers().contains_key("subscription-userinfo"));
+
+    let body = body_text(resp).await;
+    let decoded = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(body.trim())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(decoded.contains("vless://"));
 }

@@ -2,12 +2,16 @@
 
 pub mod auth;
 pub mod clients;
+pub mod ddns;
 pub mod inbound;
 pub mod logs;
 pub mod middleware;
+pub mod nodes;
+pub mod outbound;
 pub mod settings;
 pub mod sub;
 pub mod system;
+pub mod tunnel;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +46,7 @@ pub struct AppState {
     pub cert_tracker: Arc<crate::proxy::CertProgressTracker>,
     pub system_tracker: Arc<system::SystemTracker>,
     pub ddns_notifier: crate::ddns::DdnsNotifier,
+    pub node_manager: Arc<crate::node::NodeManager>,
     /// Set to true before sending `Stop` to the supervisor; background update
     /// tasks check this before taking actions that require a live supervisor.
     pub shutdown_initiated: Arc<std::sync::atomic::AtomicBool>,
@@ -53,10 +58,31 @@ pub fn router(state: AppState) -> Router {
     let public = Router::new()
         .route("/", get(auth::login_page))
         .route("/login", post(auth::login_submit))
-        .route("/sub/:token", get(sub::handle_subscription));
+        .route("/sub/:token", get(sub::handle_subscription))
+        .route(
+            "/api/node/ws",
+            get(crate::node::server::ws_handler).with_state(crate::node::server::NodeServerState {
+                pool: state.pool.clone(),
+                manager: state.node_manager.clone(),
+            }),
+        );
 
     let admin = Router::new()
         .route("/admin", get(auth::dashboard))
+        .route("/admin/nodes", get(nodes::list_page))
+        .route("/admin/nodes/token", post(nodes::generate_token))
+        .route("/admin/nodes/:id/delete", post(nodes::delete_node))
+        .route("/admin/node-groups", post(nodes::create_group))
+        .route("/admin/node-groups/:id/delete", post(nodes::delete_group))
+        .route("/admin/nodes/install.sh", get(nodes::install_script))
+        .route("/admin/api/nodes", get(nodes::api_list_nodes))
+        .route("/admin/outbounds", get(outbound::list))
+        .route("/admin/outbounds/parse_link", post(outbound::parse_link))
+        .route("/admin/outbounds/new", get(outbound::new_form))
+        .route("/admin/outbounds/new", post(outbound::save_new))
+        .route("/admin/outbounds/:id/edit", get(outbound::edit_form))
+        .route("/admin/outbounds/:id/edit", post(outbound::save_edit))
+        .route("/admin/outbounds/:id/delete", post(outbound::delete))
         .route("/admin/logout", post(auth::logout))
         .route("/admin/password", post(auth::change_password))
         .route("/admin/inbound", get(inbound::list))
@@ -99,6 +125,14 @@ pub fn router(state: AppState) -> Router {
             "/admin/proxy/certs/download",
             get(settings::cert_file_download),
         )
+        .route("/admin/tunnel", get(tunnel::tunnel_page))
+        .route("/admin/tunnel", post(tunnel::save_tunnel_settings))
+        .route("/admin/tunnel/action", post(tunnel::tunnel_action_api))
+        .route("/admin/tunnel/status", get(tunnel::tunnel_status_api))
+        .route("/admin/ddns", get(ddns::ddns_page))
+        .route("/admin/ddns", post(ddns::save_ddns_settings))
+        .route("/admin/ddns/sync", post(ddns::trigger_ddns_sync))
+        .route("/admin/ddns/status", get(ddns::ddns_status_api))
         .route("/admin/settings", get(settings::settings_page))
         .route("/admin/settings/proxy", post(settings::save_proxy_settings))
         .route(

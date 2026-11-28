@@ -211,10 +211,17 @@ impl EffectiveHost {
                 is_fallback: true,
             }
         } else {
+            let host_part = trimmed.trim_matches('/');
+            let is_ip = host_part.parse::<std::net::IpAddr>().is_ok()
+                || host_part
+                    .rsplit_once(':')
+                    .map(|(h, _)| h.parse::<std::net::IpAddr>().is_ok())
+                    .unwrap_or(false);
+            let scheme = if is_ip { "http" } else { "https" };
             Self {
                 raw: trimmed.to_string(),
-                scheme: "http",
-                host: trimmed.trim_matches('/').to_string(),
+                scheme,
+                host: host_part.to_string(),
                 is_fallback,
             }
         }
@@ -352,6 +359,18 @@ mod tests {
         assert_eq!(h4.scheme, "http");
         assert_eq!(h4.host, "your-server.example.com");
         assert!(h4.is_fallback);
+
+        let h_domain = EffectiveHost::parse("tw.856668.xyz", false);
+        assert_eq!(h_domain.scheme, "https");
+        assert_eq!(h_domain.host, "tw.856668.xyz");
+
+        let h_domain_port = EffectiveHost::parse("tw.856668.xyz:2053", false);
+        assert_eq!(h_domain_port.scheme, "https");
+        assert_eq!(h_domain_port.host, "tw.856668.xyz:2053");
+
+        let h_ip_port = EffectiveHost::parse("198.51.100.1:8080", false);
+        assert_eq!(h_ip_port.scheme, "http");
+        assert_eq!(h_ip_port.host, "198.51.100.1:8080");
     }
 
     #[tokio::test]

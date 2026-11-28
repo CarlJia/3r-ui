@@ -76,6 +76,7 @@ async fn boot() -> Harness {
         cert_tracker: Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: Arc::new(three_r_ui::web::system::SystemTracker::new()),
         ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
+        node_manager: Arc::new(three_r_ui::node::NodeManager::new(pool.clone())),
         shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
@@ -188,6 +189,19 @@ async fn settings_page_renders_with_session() {
     assert_eq!(resp.status(), StatusCode::OK);
     let html = body_text(resp).await;
     assert!(html.contains("系统设置"), "should contain heading");
+    assert!(
+        html.contains("3R-UI 面板版本"),
+        "should contain panel version label"
+    );
+    assert!(
+        html.contains(three_r_ui::version::APP_VERSION),
+        "should contain panel version value"
+    );
+    assert_eq!(
+        three_r_ui::version::APP_VERSION,
+        "v0.0.4",
+        "should match latest git tag"
+    );
 }
 
 // ─── CSRF ───────────────────────────────────────────────────────────────────
@@ -794,4 +808,78 @@ async fn test_ddns_settings_and_sync_endpoints() {
         .unwrap();
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_standalone_tunnel_and_ddns_pages() {
+    let h = boot().await;
+    let (session, csrf) = login(&h).await;
+
+    // 1. Visit /admin/tunnel
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/tunnel")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(html.contains("内网穿透保护 (Cloudflare Tunnel)"));
+    assert!(html.contains("守护进程与运行状态"));
+
+    // 2. Save tunnel settings via /admin/tunnel
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/tunnel")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "csrf={csrf}&enabled=1&tunnel_token=test_token_12345"
+        )))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let tunnel: three_r_ui::db::models::TunnelSettings = sqlx::query_as(
+        "SELECT id, enabled, tunnel_token, custom_path, last_status, updated_at FROM tunnel_settings WHERE id = 1",
+    )
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(tunnel.enabled, 1);
+    assert_eq!(tunnel.tunnel_token, "test_token_12345");
+
+    // 3. Visit /admin/ddns
+    let req = Request::builder()
+        .method("GET")
+        .uri("/admin/ddns")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(html.contains("动态域名解析 (Cloudflare DDNS)"));
+    assert!(html.contains("同步探测状态"));
+
+    // 4. Save ddns settings via /admin/ddns
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/ddns")
+        .header("cookie", format!("session={session}; csrf={csrf}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!(
+            "csrf={csrf}&enabled=1&cf_api_token=new_ddns_token&ipv4_enabled=1&ipv4_domains=ddns2.example.com"
+        )))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    let ddns = three_r_ui::ddns::config::get_ddns_settings(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(ddns.enabled, 1);
+    assert_eq!(ddns.cf_api_token, "new_ddns_token");
+    assert_eq!(ddns.ipv4_domains, "ddns2.example.com");
 }

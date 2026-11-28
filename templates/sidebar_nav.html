@@ -1,5 +1,8 @@
 <aside class="sidebar" aria-label="后台导航">
-  <a class="brand" href="{{ base_path }}/admin">3R-UI</a>
+  <div class="sidebar-header" style="display: flex; align-items: baseline; justify-content: space-between; padding: 0 12px 20px;">
+    <a class="brand" href="{{ base_path }}/admin" style="padding: 0;">3R-UI</a>
+    <span class="panel-version" style="font-size: 11px; font-weight: 500; color: #7e94a5; background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.08);" title="3R-UI 面板版本">{{ crate::version::APP_VERSION }}</span>
+  </div>
   <p class="nav-label">管理</p>
   <nav aria-label="主菜单">
     <a class="nav-link {% if nav_active == "dashboard" %}active{% endif %}" {% if nav_active == "dashboard" %}aria-current="page"{% endif %} href="{{ base_path }}/admin">
@@ -7,6 +10,12 @@
     </a>
     <a class="nav-link {% if nav_active == "inbound" %}active{% endif %}" {% if nav_active == "inbound" %}aria-current="page"{% endif %} href="{{ base_path }}/admin/inbound">
       <span class="nav-icon">⚡</span><span>入站列表</span>
+    </a>
+    <a class="nav-link {% if nav_active == "outbounds" %}active{% endif %}" {% if nav_active == "outbounds" %}aria-current="page"{% endif %} href="{{ base_path }}/admin/outbounds">
+      <span class="nav-icon">🔀</span><span>出站代理</span>
+    </a>
+    <a class="nav-link {% if nav_active == "nodes" %}active{% endif %}" {% if nav_active == "nodes" %}aria-current="page"{% endif %} href="{{ base_path }}/admin/nodes">
+      <span class="nav-icon">🖥️</span><span>节点管理</span>
     </a>
     <a class="nav-link {% if nav_active == "clients" %}active{% endif %}" {% if nav_active == "clients" %}aria-current="page"{% endif %} href="{{ base_path }}/admin/clients">
       <span class="nav-icon">👥</span><span>用户列表</span>
@@ -16,6 +25,12 @@
     </a>
     <a class="nav-link {% if nav_active == "proxy" %}active{% endif %}" {% if nav_active == "proxy" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="{{ base_path }}/admin/proxy">
       <span class="nav-icon">🌐</span><span>反代证书</span>
+    </a>
+    <a class="nav-link {% if nav_active == "tunnel" %}active{% endif %}" {% if nav_active == "tunnel" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="{{ base_path }}/admin/tunnel">
+      <span class="nav-icon">🚇</span><span>内网穿透</span>
+    </a>
+    <a class="nav-link {% if nav_active == "ddns" %}active{% endif %}" {% if nav_active == "ddns" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="{{ base_path }}/admin/ddns">
+      <span class="nav-icon">📡</span><span>动态解析</span>
     </a>
     <a class="nav-link {% if nav_active == "settings" %}active{% endif %}" {% if nav_active == "settings" %}aria-current="page"{% else %}aria-current="false"{% endif %} href="{{ base_path }}/admin/settings">
       <span class="nav-icon">⚙️</span><span>系统设置</span>

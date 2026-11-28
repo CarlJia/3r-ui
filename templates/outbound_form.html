@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if outbound.is_some() %}编辑出站节点 - 3R-UI{% else %}新建出站节点 - 3R-UI{% endif %}</title>
+  {% include "theme_head.html" %}
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input, select, textarea { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+      .error { background: #3a1f22 !important; color: #ff9b9b !important; border-color: #5c2b2f !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    input, select, textarea {
+      width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px;
+      border: 1px solid #d5d9de; background: #fff; color: inherit; margin-bottom: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .actions { display: flex; gap: 10px; align-items: center; }
+    button, .btn {
+      padding: 9px 16px; font-size: 14px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-secondary { background: #e3e6ea; color: #1c2024; }
+    .error {
+      background: #fee2e2; color: #991b1b; padding: 10px 14px; border-radius: 8px;
+      font-size: 13px; margin-bottom: 16px; border: 1px solid #fecaca;
+    }
+    {% include "sidebar_style.html" %}
+  </style>
+</head>
+<body>
+  {% let nav_active = "outbounds" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
+    <header>
+      <h1>{% if outbound.is_some() %}编辑出站节点{% else %}新建出站节点{% endif %}</h1>
+    </header>
+    <main>
+      {% if let Some(err) = error %}
+        <div class="error">{{ err }}</div>
+      {% endif %}
+
+      <section class="card" style="border-left: 4px solid #3b82f6;">
+        <h2 style="display: flex; align-items: center; justify-content: space-between;">
+          <span>⚡ 快捷链接导入 (Share Link)</span>
+          <span style="font-size: 11px; font-weight: normal; color: #7e94a5;">支持 VMess / VLESS / Shadowsocks / SOCKS5 / HTTP</span>
+        </h2>
+        <p class="hint">粘贴单个节点的分享链接，一键自动填充并生成对应的协议与传输配置。</p>
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+          <input id="import_link_input" type="text" placeholder="粘贴链接，例如: vless://... 或 vmess://... 或 ss://..." style="margin-bottom: 0;">
+          <button type="button" id="btn_parse_link" class="btn btn-primary" style="white-space: nowrap; padding: 0 16px;">解析并填入</button>
+        </div>
+        <div id="import_feedback" style="display: none; margin-top: 10px; font-size: 13px; padding: 8px 12px; border-radius: 6px;"></div>
+      </section>
+
+      <section class="card">
+        <h2>出站代理配置</h2>
+        <p class="hint">配置用于中继/链式转发的下游目标节点。</p>
+
+        <form method="post" action="{% match outbound %}{% when Some with (ob) %}{{ base_path }}/admin/outbounds/{{ ob.id }}/edit{% when None %}{{ base_path }}/admin/outbounds/new{% endmatch %}">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+
+          <label for="name">节点名称 (备注)</label>
+          <input id="name" name="name" placeholder="例如: 香港落地-01" required
+                 value="{% match outbound %}{% when Some with (ob) %}{{ ob.name }}{% when None %}{% endmatch %}">
+
+          <label for="tag">出站 Tag (唯一英文标识)</label>
+          <input id="tag" name="tag" placeholder="例如: out-hk-01" required
+                 value="{% match outbound %}{% when Some with (ob) %}{{ ob.tag }}{% when None %}{% endmatch %}">
+
+          <label for="protocol">出站协议</label>
+          <select id="protocol" name="protocol">
+            <option value="socks" {% match outbound %}{% when Some with (ob) %}{% if ob.protocol == "socks" %}selected{% endif %}{% when None %}selected{% endmatch %}>SOCKS5</option>
+            <option value="http" {% match outbound %}{% when Some with (ob) %}{% if ob.protocol == "http" %}selected{% endif %}{% when None %}{% endmatch %}>HTTP Proxy</option>
+            <option value="shadowsocks" {% match outbound %}{% when Some with (ob) %}{% if ob.protocol == "shadowsocks" %}selected{% endif %}{% when None %}{% endmatch %}>Shadowsocks</option>
+            <option value="vmess" {% match outbound %}{% when Some with (ob) %}{% if ob.protocol == "vmess" %}selected{% endif %}{% when None %}{% endmatch %}>VMess</option>
+            <option value="vless" {% match outbound %}{% when Some with (ob) %}{% if ob.protocol == "vless" %}selected{% endif %}{% when None %}{% endmatch %}>VLESS</option>
+          </select>
+
+          <label for="server_addr">服务器地址 (IP 或域名)</label>
+          <input id="server_addr" name="server_addr" placeholder="198.51.100.1 或 hk.example.com" required
+                 value="{% match outbound %}{% when Some with (ob) %}{{ ob.server_addr }}{% when None %}{% endmatch %}">
+
+          <label for="server_port">服务器端口</label>
+          <input id="server_port" name="server_port" type="number" min="1" max="65535" placeholder="1080" required
+                 value="{% match outbound %}{% when Some with (ob) %}{{ ob.server_port }}{% when None %}1080{% endmatch %}">
+
+          <label for="settings_json">协议参数详情 (JSON 格式)</label>
+          <textarea id="settings_json" name="settings_json" rows="6" placeholder='Socks: {"users":[{"user":"u","pass":"p"}]}
+SS: {"method":"aes-256-gcm","password":"secret"}
+VMess: {"uuid":"...","security":"auto"}'>{% match outbound %}{% when Some with (ob) %}{{ ob.settings_json }}{% when None %}{}{% endmatch %}</textarea>
+          <p class="hint">针对所选协议的认证与附加配置。留空默认为 <code>{}</code>。</p>
+
+          <label for="status">状态</label>
+          <select id="status" name="status">
+            <option value="active" {% match outbound %}{% when Some with (ob) %}{% if ob.status == "active" %}selected{% endif %}{% when None %}selected{% endmatch %}>启用 (Active)</option>
+            <option value="disabled" {% match outbound %}{% when Some with (ob) %}{% if ob.status != "active" %}selected{% endif %}{% when None %}{% endmatch %}>停用 (Disabled)</option>
+          </select>
+
+          <div class="actions" style="margin-top: 16px;">
+            <button class="btn-primary" type="submit">保存出站节点</button>
+            <a class="btn btn-secondary" href="{{ base_path }}/admin/outbounds">返回列表</a>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    document.getElementById('btn_parse_link')?.addEventListener('click', async function() {
+      const input = document.getElementById('import_link_input');
+      const link = (input.value || '').trim();
+      if (!link) {
+        showFeedback('请输入节点分享链接', false);
+        return;
+      }
+
+      const csrf = '{{ csrf }}';
+      const basePath = '{{ base_path }}';
+      const url = (basePath ? basePath : '') + '/admin/outbounds/parse_link';
+
+      try {
+        const formData = new URLSearchParams();
+        formData.append('link', link);
+        formData.append('csrf', csrf);
+
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-CSRF-Token': csrf
+          },
+          body: formData.toString()
+        });
+
+        const res = await resp.json();
+        if (!resp.ok || !res.success) {
+          showFeedback(res.error || '解析链接失败，请检查链接格式', false);
+          return;
+        }
+
+        const d = res.data;
+        if (document.getElementById('name')) document.getElementById('name').value = d.name || '';
+        if (document.getElementById('tag')) document.getElementById('tag').value = d.tag || '';
+        if (document.getElementById('protocol')) document.getElementById('protocol').value = d.protocol || 'socks';
+        if (document.getElementById('server_addr')) document.getElementById('server_addr').value = d.server_addr || '';
+        if (document.getElementById('server_port')) document.getElementById('server_port').value = d.server_port || 443;
+        if (document.getElementById('settings_json')) document.getElementById('settings_json').value = d.settings_json || '{}';
+
+        showFeedback('已成功解析并填入表单！请检查无误后保存。', true);
+      } catch (err) {
+        showFeedback('网络请求异常: ' + err.message, false);
+      }
+    });
+
+    function showFeedback(msg, success) {
+      const fb = document.getElementById('import_feedback');
+      if (!fb) return;
+      fb.style.display = 'block';
+      fb.innerText = msg;
+      if (success) {
+        fb.style.background = '#dcfce7';
+        fb.style.color = '#15803d';
+        fb.style.border = '1px solid #bbf7d0';
+      } else {
+        fb.style.background = '#fee2e2';
+        fb.style.color = '#b91c1c';
+        fb.style.border = '1px solid #fecaca';
+      }
+    }
+  </script>
+</body>
+</html>

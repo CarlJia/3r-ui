@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>动态域名解析 (Cloudflare DDNS) - 3R-UI</title>
+  {% include "theme_head.html" %}
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card { background: #1e2126 !important; border-color: #2c3037 !important; }
+      input, select, textarea { background: #16181d !important; color: #e6e8eb !important; border-color: #2c3037 !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    main { max-width: 860px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; font-size: 13px; opacity: .65; }
+    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    input, select, textarea {
+      width: 100%; padding: 8px 10px; font-size: 14px; border-radius: 8px;
+      border: 1px solid #d5d9de; background: #fff; color: inherit; margin-bottom: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    dl { margin: 0; }
+    dt { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    dd { margin: 0 0 16px 0; }
+    .actions { display: flex; gap: 10px; align-items: center; }
+    button, .btn {
+      padding: 8px 14px; font-size: 13px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-secondary { background: #e3e6ea; color: #1c2024; }
+    .status-badge {
+      display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 600;
+    }
+    .status-badge-succeeded { background: #10b981; color: #fff; }
+    .status-badge-failed { background: #ef4444; color: #fff; }
+    {% include "sidebar_style.html" %}
+  </style>
+</head>
+<body>
+  {% let nav_active = "ddns" %}
+  {% include "sidebar_nav.html" %}
+  <div class="content">
+    <header>
+      <h1>动态域名解析 (Cloudflare DDNS)</h1>
+    </header>
+    <main>
+      <section class="card">
+        <h2>同步探测状态</h2>
+        <p class="hint">针对 NAT VPS 或动态公网 IP 环境，定期探测服务器公网 IP 并自动同步更新 Cloudflare 域名的 A / AAAA 解析记录。</p>
+
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 14px 16px; margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-weight: 600; font-size: 14px;">当前同步状态</span>
+              {% if ddns.is_enabled() %}
+                {% if ddns.last_status.contains("成功") || ddns.last_status.contains("Success") %}
+                  <span class="status-badge status-badge-succeeded">{{ ddns.last_status }}</span>
+                {% else if ddns.last_status.is_empty() %}
+                  <span class="status-badge" style="background: #6b7280; color: #fff;">就绪 (等待首次同步)</span>
+                {% else %}
+                  <span class="status-badge status-badge-failed">{{ ddns.last_status }}</span>
+                {% endif %}
+              {% else %}
+                <span class="status-badge" style="background: #4b5563; color: #9ca3af;">已禁用</span>
+              {% endif %}
+            </div>
+            <button type="button" id="ddns-sync-now-btn" class="btn btn-secondary" onclick="triggerDdnsSync()">立即探测同步</button>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; font-size: 13px;">
+            <div>
+              <span style="opacity: .65;">探测 IPv4:</span>
+              <code id="ddns-last-ipv4" style="margin-left: 6px; font-weight: 600; color: #3b82f6;">
+                {% if !ddns.last_ipv4.is_empty() %}{{ ddns.last_ipv4 }}{% else %}<span style="opacity:.4;">未记录</span>{% endif %}
+              </code>
+            </div>
+            <div>
+              <span style="opacity: .65;">探测 IPv6:</span>
+              <code id="ddns-last-ipv6" style="margin-left: 6px; font-weight: 600; color: #a855f7;">
+                {% if !ddns.last_ipv6.is_empty() %}{{ ddns.last_ipv6 }}{% else %}<span style="opacity:.4;">未记录</span>{% endif %}
+              </code>
+            </div>
+            <div>
+              <span style="opacity: .65;">上次同步时间:</span>
+              <span id="ddns-last-sync-time" style="margin-left: 6px;">
+                {{ ddns_last_sync_time }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <form method="post" action="{{ base_path }}/admin/ddns">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input type="checkbox" name="enabled" value="1" {% if ddns.is_enabled() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+              <span style="font-weight: 600;">启用 Cloudflare DDNS</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input type="checkbox" name="cf_proxied" value="1" {% if ddns.is_cf_proxied() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+              <span>开启 Cloudflare CDN 代理 (小黄云)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input type="checkbox" name="auto_sync_public_host" value="1" {% if ddns.is_auto_sync_public_host() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+              <span>自动同步为节点连接 Host</span>
+            </label>
+          </div>
+
+          <dl>
+            <dt>Cloudflare API Token</dt>
+            <dd>
+              <input type="password" name="cf_api_token" value="{{ ddns_effective_token_masked }}" placeholder="Cloudflare Edit zone DNS 权限 Token" style="max-width: 520px; margin-bottom: 0;">
+              <div style="font-size: 12px; opacity: .65; margin-top: 4px;">
+                {% if ddns_inherited_from_proxy %}
+                  <span style="color: #10b981;">已继承反向代理配置中的 Cloudflare Token</span>。留空或输入掩码时将保持不变。
+                {% else if !ddns.cf_api_token.is_empty() %}
+                  已配置独立 Token。留空或输入掩码时保持原 Token 不变。
+                {% else %}
+                  留空时将自动尝试使用反向代理配置已有的 Cloudflare API Token。
+                {% endif %}
+              </div>
+            </dd>
+
+            <dt>
+              <label style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" name="ipv4_enabled" value="1" {% if ddns.is_ipv4_enabled() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+                <span>IPv4 域名列表 (A 记录)</span>
+              </label>
+            </dt>
+            <dd>
+              <input type="text" name="ipv4_domains" value="{{ ddns.ipv4_domains }}" placeholder="例如: vps.example.com (多个用逗号隔开)" style="max-width: 520px; margin-bottom: 0;">
+              <div style="font-size: 12px; opacity: .65; margin-top: 4px;">自动将探测到的 VPS 公网 IPv4 写入上述域名的 Cloudflare A 记录。</div>
+            </dd>
+
+            <dt>
+              <label style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" name="ipv6_enabled" value="1" {% if ddns.is_ipv6_enabled() %}checked{% endif %} style="width: auto; margin-bottom: 0;">
+                <span>IPv6 域名列表 (AAAA 记录)</span>
+              </label>
+            </dt>
+            <dd>
+              <input type="text" name="ipv6_domains" value="{{ ddns.ipv6_domains }}" placeholder="例如: v6.example.com (可选，多个用逗号隔开)" style="max-width: 520px; margin-bottom: 0;">
+              <div style="font-size: 12px; opacity: .65; margin-top: 4px;">若 VPS 拥有原生 IPv6 出口，将自动写入 AAAA 记录。</div>
+            </dd>
+
+            <dt>检测与同步周期 (分钟)</dt>
+            <dd>
+              <input type="number" name="check_interval_mins" value="{{ ddns.check_interval_mins }}" min="1" max="1440" style="max-width: 140px; margin-bottom: 0;">
+              <span style="font-size: 12px; opacity: .65; margin-left: 8px;">推荐 5 分钟 (范围 1 ~ 1440 分钟)。</span>
+            </dd>
+          </dl>
+
+          <div class="actions" style="margin-top: 16px;">
+            <button type="submit" class="btn btn-primary">保存 DDNS 配置</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    function triggerDdnsSync() {
+      var btn = document.getElementById("ddns-sync-now-btn");
+      if (!btn) return;
+      var oldText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "同步中...";
+      var formData = new URLSearchParams();
+      formData.append("csrf", "{{ csrf }}");
+      fetch("{{ base_path }}/admin/ddns/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: formData.toString()
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+        if (data.status === "ok") {
+          if (typeof showToast === "function") {
+            showToast("DDNS 同步完成: " + data.message, "success");
+          } else {
+            alert("DDNS 同步完成: " + data.message);
+          }
+          setTimeout(function() { location.reload(); }, 1000);
+        } else {
+          var err = data.error || "同步失败";
+          if (typeof showToast === "function") {
+            showToast(err, "error");
+          } else {
+            alert("同步失败: " + err);
+          }
+        }
+      })
+      .catch(function(e) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+        if (typeof showToast === "function") {
+          showToast("网络错误: " + e.message, "error");
+        } else {
+          alert("网络错误: " + e.message);
+        }
+      });
+    }
+  </script>
+</body>
+</html>

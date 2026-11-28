@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::error::{AppError, AppResult};
 
 const XRAY_REPO: &str = "XTLS/Xray-core";
-const USER_AGENT: &str = concat!("3r-ui/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("3r-ui/", env!("APP_VERSION"));
 
 /// Data files the release archive ships next to the binary and xray loads at
 /// startup.

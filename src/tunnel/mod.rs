@@ -23,6 +23,7 @@ pub struct TunnelStatus {
     pub installed: bool,
     pub bin_path: String,
     pub running: bool,
+    pub is_external: bool,
     pub pid: Option<u32>,
     pub last_status: String,
     pub logs: Vec<String>,
@@ -56,6 +57,59 @@ pub fn find_cloudflared_bin(custom_path: &str) -> Option<PathBuf> {
             let candidate = dir.join("cloudflared");
             if candidate.is_file() {
                 return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// 查找宿主机中正在运行的独立或系统级 cloudflared 进程（非当前实例子进程）
+pub fn find_system_cloudflared_pid(exclude_pid: Option<u32>) -> Option<u32> {
+    // 1. 优先使用 pgrep 探测宿主机进程
+    if let Ok(output) = std::process::Command::new("pgrep")
+        .arg("-x")
+        .arg("cloudflared")
+        .output()
+    {
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout);
+            for line in s.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    if Some(pid) == exclude_pid {
+                        continue;
+                    }
+                    #[cfg(unix)]
+                    if unsafe { libc::kill(pid as i32, 0) } == 0 {
+                        return Some(pid);
+                    }
+                    #[cfg(not(unix))]
+                    return Some(pid);
+                }
+            }
+        }
+    }
+
+    // 2. Linux 下遍历 /proc 作为兜底探测（适用于精简系统无 pgrep 的场景）
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if let Ok(pid) = name_str.parse::<u32>() {
+                    if Some(pid) == exclude_pid {
+                        continue;
+                    }
+                    let comm_path = entry.path().join("comm");
+                    if let Ok(comm) = std::fs::read_to_string(comm_path) {
+                        if comm.trim() == "cloudflared" {
+                            if unsafe { libc::kill(pid as i32, 0) } == 0 {
+                                return Some(pid);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -122,16 +176,36 @@ impl CloudflaredSupervisor {
         let bin_path = bin
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let running = self.is_running().await;
-        let pid = if running { self.get_pid().await } else { None };
-        let logs = self.get_logs().await;
+
+        let (running, is_external, pid) = if self.is_running().await {
+            (true, false, self.get_pid().await)
+        } else if let Some(sys_pid) = find_system_cloudflared_pid(None) {
+            (true, true, Some(sys_pid))
+        } else {
+            (false, false, None)
+        };
+
+        let mut logs = self.get_logs().await;
+        if is_external && logs.is_empty() {
+            logs.push(format!(
+                "[3r-ui] 提示: 宿主机检测到正在运行的独立 cloudflared 系统服务 (PID: {})。如需查看日志，可在终端执行: journalctl -u cloudflared -f",
+                pid.unwrap_or(0)
+            ));
+        }
+
+        let last_status = if is_external && settings.last_status.is_empty() {
+            "System Service Running".to_string()
+        } else {
+            settings.last_status
+        };
 
         Ok(TunnelStatus {
             installed,
             bin_path,
             running,
+            is_external,
             pid,
-            last_status: settings.last_status,
+            last_status,
             logs,
         })
     }
@@ -211,6 +285,21 @@ impl CloudflaredSupervisor {
             return Ok(());
         };
 
+        // 检查宿主机是否已有外部运行中的 cloudflared，防止双实例启动冲突
+        let my_pid = self.get_pid().await;
+        if let Some(sys_pid) = find_system_cloudflared_pid(my_pid) {
+            warn!(
+                sys_pid,
+                "an external cloudflared process is already running on host; avoiding duplicate spawn"
+            );
+            self.append_log(format!(
+                "[3r-ui] 警告: 宿主机已有 cloudflared 实例正在运行 (PID: {sys_pid})。为避免双实例冲突，未启动新进程。如需由面板接管，请先停止系统服务 (sudo systemctl disable --now cloudflared)。"
+            ))
+            .await;
+            self.update_last_status("External Service Running").await;
+            return Ok(());
+        }
+
         info!(
             bin = %bin_path.display(),
             "spawning cloudflared tunnel daemon"
@@ -270,6 +359,15 @@ impl CloudflaredSupervisor {
             let _ = child.kill().await;
             self.append_log("[3r-ui] Cloudflare tunnel daemon stopped".to_string())
                 .await;
+        } else if let Some(sys_pid) = find_system_cloudflared_pid(None) {
+            warn!(
+                sys_pid,
+                "attempted to stop external system cloudflared service from panel"
+            );
+            self.append_log(format!(
+                "[3r-ui] 提示: 当前 cloudflared 由宿主机系统服务运行 (PID: {sys_pid})，面板未直接接管其进程生命周期。如需停止该服务，请在终端执行: sudo systemctl stop cloudflared"
+            ))
+            .await;
         }
         let _ = std::fs::remove_file(&self.pid_file);
         self.update_last_status("Stopped").await;
@@ -346,5 +444,25 @@ mod tests {
         assert_eq!(logs.len(), 100);
         assert_eq!(logs[0], "line 20");
         assert_eq!(logs[99], "line 119");
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_status_structure() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE tunnel_settings (id INTEGER PRIMARY KEY, enabled INTEGER, tunnel_token TEXT, custom_path TEXT, last_status TEXT, updated_at INTEGER);"
+        ).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO tunnel_settings VALUES (1, 0, '', '', '', 0);")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let sup = CloudflaredSupervisor::new(pool, dir.path());
+        let status = sup.status().await.unwrap();
+        // Initially no child spawned
+        assert!(!sup.is_running().await);
+        // Status structure has is_external field
+        assert_eq!(status.running, status.is_external);
     }
 }

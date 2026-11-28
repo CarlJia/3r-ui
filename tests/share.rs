@@ -69,6 +69,7 @@ async fn boot() -> Harness {
         cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
+        node_manager: std::sync::Arc::new(three_r_ui::node::NodeManager::new(pool.clone())),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {
@@ -256,6 +257,7 @@ async fn detail_page_warns_when_public_host_is_unset() {
         cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
+        node_manager: std::sync::Arc::new(three_r_ui::node::NodeManager::new(pool.clone())),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let app = web::router(state);
@@ -442,6 +444,7 @@ async fn hy2_share_uri_generation() {
         skip_cert_verify: 0,
         udp: 1,
         status: "active".into(),
+        outbound_id: None,
         created_at: None,
         updated_at: None,
     };

@@ -68,6 +68,7 @@ async fn boot() -> Harness {
         cert_tracker: std::sync::Arc::new(three_r_ui::proxy::CertProgressTracker::new()),
         system_tracker: std::sync::Arc::new(three_r_ui::web::system::SystemTracker::new()),
         ddns_notifier: three_r_ui::ddns::DdnsNotifier::new(),
+        node_manager: std::sync::Arc::new(three_r_ui::node::NodeManager::new(pool.clone())),
         shutdown_initiated: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     Harness {

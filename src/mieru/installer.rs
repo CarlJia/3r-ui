@@ -107,7 +107,7 @@ pub struct MitaInstaller {
 impl MitaInstaller {
     pub fn new() -> AppResult<Self> {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("3r-ui/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("3r-ui/", env!("APP_VERSION")))
             .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
             .build()
             .map_err(|e| AppError::Mieru(format!("http client init failed: {e}")))?;

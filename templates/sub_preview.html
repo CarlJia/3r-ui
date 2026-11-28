@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ client_name }} - 3R-UI 订阅详情</title>
+  {% include "theme_head.html" %}
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9;
+      color: #1c2024;
+      line-height: 1.5;
+    }
+    header {
+      background: #fff;
+      border-bottom: 1px solid #e3e6ea;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .brand-badge {
+      background: #3b82f6;
+      color: #fff;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    main {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e3e6ea;
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .card-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #e3f5e9;
+      color: #1a7f42;
+    }
+    .status-badge.expired {
+      background: #fdecec;
+      color: #a4262c;
+    }
+    .user-uuid {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: #64748b;
+      word-break: break-all;
+      margin-top: 4px;
+    }
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #475569;
+    }
+    .meta-item b {
+      color: #1e293b;
+      font-weight: 600;
+    }
+    /* 流量进度条 */
+    .progress-box {
+      margin-top: 16px;
+    }
+    .progress-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .progress-track {
+      background: #e2e8f0;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #3b82f6, #60a5fa);
+      border-radius: 999px;
+      transition: width 0.4s ease;
+    }
+    .progress-bar.warning {
+      background: linear-gradient(90deg, #f59e0b, #ef4444);
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 16px;
+      text-align: center;
+    }
+    @media (max-width: 540px) {
+      .stats-grid { grid-template-columns: 1fr; gap: 8px; text-align: left; }
+      .stat-item { display: flex; justify-content: space-between; align-items: center; }
+    }
+    .stat-item {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px 14px;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 2px;
+    }
+    .stat-val {
+      font-size: 15px;
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #0f172a;
+    }
+    /* 按钮组 */
+    .btn {
+      padding: 8px 15px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: opacity 0.15s ease;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-secondary { background: #e2e8f0; color: #1e293b; }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    /* 二维码容器 */
+    .qr-card {
+      text-align: center;
+      padding: 16px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      margin-top: 14px;
+    }
+    .qr-card img {
+      max-width: 200px;
+      height: auto;
+      background: #fff;
+      padding: 6px;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    /* 节点卡片列表 */
+    .node-card {
+      background: #fff;
+      border: 1px solid #e3e6ea;
+      border-radius: 12px;
+      padding: 14px 18px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .node-info {
+      flex: 1;
+      min-width: 240px;
+    }
+    .node-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .node-name {
+      font-weight: 600;
+      font-size: 14px;
+      color: #0f172a;
+    }
+    .node-meta {
+      font-size: 12px;
+      color: #64748b;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .node-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .badge-vless { background: #eff6ff; color: #2563eb; }
+    .badge-hy2 { background: #fdf2f8; color: #db2777; }
+    .badge-mieru { background: #f3e8ff; color: #7e22ce; }
+    /* Toast 提示 */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: #0f172a;
+      color: #fff;
+      padding: 9px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      transition: transform 0.25s ease, opacity 0.25s ease;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    #toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+    footer {
+      text-align: center;
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 32px;
+    }
+    /* 暗色主题适配 */
+    @media (prefers-color-scheme: dark) {
+      body { background: #0f172a; color: #e2e8f0; }
+      header { background: #1e293b !important; border-color: #334155 !important; }
+      .card, .node-card { background: #1e293b !important; border-color: #334155 !important; }
+      .card-title, .node-name { color: #f8fafc !important; }
+      .user-uuid, .node-meta { color: #94a3b8 !important; }
+      .meta-row { color: #cbd5e1 !important; }
+      .meta-item b { color: #93c5fd !important; }
+      .stat-item, .qr-card { background: #0f172a !important; border-color: #334155 !important; }
+      .stat-val { color: #f8fafc !important; }
+      .progress-track { background: #334155 !important; }
+      .btn-secondary { background: #334155 !important; color: #f8fafc !important; }
+      .status-badge { background: #14532d !important; color: #86efac !important; }
+      .status-badge.expired { background: #7f1d1d !important; color: #fca5a5 !important; }
+      #toast { background: #f8fafc; color: #0f172a; }
+    }
+    html[data-theme="dark"] body { background: #0f172a; color: #e2e8f0; }
+    html[data-theme="dark"] header { background: #1e293b !important; border-color: #334155 !important; }
+    html[data-theme="dark"] .card, html[data-theme="dark"] .node-card { background: #1e293b !important; border-color: #334155 !important; }
+    html[data-theme="dark"] .card-title, html[data-theme="dark"] .node-name { color: #f8fafc !important; }
+    html[data-theme="dark"] .user-uuid, html[data-theme="dark"] .node-meta { color: #94a3b8 !important; }
+    html[data-theme="dark"] .meta-row { color: #cbd5e1 !important; }
+    html[data-theme="dark"] .meta-item b { color: #93c5fd !important; }
+    html[data-theme="dark"] .stat-item, html[data-theme="dark"] .qr-card { background: #0f172a !important; border-color: #334155 !important; }
+    html[data-theme="dark"] .stat-val { color: #f8fafc !important; }
+    html[data-theme="dark"] .progress-track { background: #334155 !important; }
+    html[data-theme="dark"] .btn-secondary { background: #334155 !important; color: #f8fafc !important; }
+    html[data-theme="dark"] .status-badge { background: #14532d !important; color: #86efac !important; }
+    html[data-theme="dark"] .status-badge.expired { background: #7f1d1d !important; color: #fca5a5 !important; }
+    html[data-theme="dark"] #toast { background: #f8fafc; color: #0f172a; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>3R-UI</span>
+      <span class="brand-badge">订阅服务</span>
+    </div>
+    <div>
+      <span class="status-badge {% if status == "已到期" %}expired{% endif %}">{{ status }}</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- 用户与流量卡片 -->
+    <section class="card" style="border-top: 4px solid #3b82f6;">
+      <div class="card-header">
+        <div>
+          <h1 class="card-title">{{ client_name }}</h1>
+          <div class="user-uuid">UUID: {{ client_uuid }}</div>
+        </div>
+      </div>
+
+      <div class="meta-row">
+        <div class="meta-item"><b>到期时间:</b> {{ expiry_date }}</div>
+        <div class="meta-item"><b>有效期限:</b> {{ remaining_days }}</div>
+      </div>
+
+      <!-- 流量进度 -->
+      <div class="progress-box">
+        <div class="progress-labels">
+          <span>已用流量</span>
+          <span>
+            {% if traffic.has_quota %}
+            {{ traffic.used_formatted }} / {{ traffic.total_formatted }} ({{ traffic.percent }}%)
+            {% else %}
+            {{ traffic.used_formatted }} (不限流量)
+            {% endif %}
+          </span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar {% if traffic.percent >= 90 %}warning{% endif %}" style="width: {{ traffic.percent }}%;"></div>
+        </div>
+      </div>
+
+      <!-- 流量栅格 -->
+      <div class="stats-grid">
+        <div class="stat-item">
+          <div class="stat-label">上传流量</div>
+          <div class="stat-val">{{ traffic.upload_formatted }}</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">下载流量</div>
+          <div class="stat-val">{{ traffic.download_formatted }}</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">剩余流量</div>
+          <div class="stat-val">{{ traffic.remaining_formatted }}</div>
+        </div>
+      </div>
+
+      <!-- 快捷操作按钮 -->
+      <div class="actions">
+        <button class="btn btn-primary" type="button" onclick="copyValue('{{ sub_url }}', '订阅链接')">
+          复制订阅链接
+        </button>
+        <button class="btn btn-secondary" type="button" onclick="toggleElement('sub-qr')">
+          展示订阅二维码
+        </button>
+        <button class="btn btn-secondary" type="button" onclick="copyValue('{{ raw_base64 }}', 'Base64 全部节点')">
+          复制全部节点
+        </button>
+      </div>
+
+      <!-- 订阅二维码展开区域 -->
+      <div id="sub-qr" class="qr-card" style="display: none;">
+        {% if !sub_qr_data_uri.is_empty() %}
+        <img src="{{ sub_qr_data_uri }}" alt="Subscription QR Code">
+        <div style="margin-top: 8px; font-size: 12px; color: #64748b;">支持 Shadowrocket / Clash 等客户端扫码添加</div>
+        {% else %}
+        <div style="font-size: 13px; color: #94a3b8;">暂无可用二维码</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <!-- 节点列表卡片 -->
+    <div style="margin: 24px 0 12px; display: flex; align-items: center; justify-content: space-between;">
+      <h2 style="font-size: 15px; font-weight: 600; margin: 0;">可用节点 ({{ nodes.len() }})</h2>
+      <span style="font-size: 12px; color: #64748b;">支持复制单个节点或扫码导入</span>
+    </div>
+
+    {% for node in nodes %}
+    <div class="node-card">
+      <div class="node-info">
+        <div class="node-header">
+          {% if node.protocol == "hysteria2" %}
+          <span class="badge badge-hy2">Hy2</span>
+          {% else if node.protocol == "mieru" %}
+          <span class="badge badge-mieru">Mieru</span>
+          {% else %}
+          <span class="badge badge-vless">VLESS</span>
+          {% endif %}
+          <span class="node-name">{{ node.name }}</span>
+        </div>
+        <div class="node-meta">
+          端口: {{ node.listen_port }} · 主机: {{ node.host_or_sni }}
+        </div>
+      </div>
+      <div class="node-actions">
+        <button class="btn btn-secondary" type="button" onclick="copyValue('{{ node.uri }}', '{{ node.name }} 节点链接')">
+          复制链接
+        </button>
+        <button class="btn btn-secondary" type="button" onclick="toggleElement('node-qr-{{ loop.index }}')">
+          二维码
+        </button>
+      </div>
+      <!-- 单节点二维码展开 -->
+      <div id="node-qr-{{ loop.index }}" class="qr-card" style="display: none; width: 100%;">
+        {% if !node.qr_data_uri.is_empty() %}
+        <img src="{{ node.qr_data_uri }}" alt="{{ node.name }} QR">
+        <div style="margin-top: 6px; font-size: 12px; color: #64748b;">扫描导入 {{ node.name }}</div>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+
+    <footer>
+      由 3R-UI 高性能代理面板驱动
+    </footer>
+  </main>
+
+  <div id="toast">已成功复制到剪贴板</div>
+
+  <script>
+    function copyValue(text, label) {
+      if (!navigator.clipboard) {
+        var textarea = document.createElement("textarea");
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+          document.execCommand("copy");
+          showToast("已复制 " + label);
+        } catch (err) {
+          showToast("复制失败，请手动长按复制");
+        }
+        document.body.removeChild(textarea);
+        return;
+      }
+      navigator.clipboard.writeText(text).then(function() {
+        showToast("已复制 " + label);
+      }).catch(function() {
+        showToast("复制失败，请手动长按复制");
+      });
+    }
+
+    function toggleElement(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      if (el.style.display === "none" || !el.style.display) {
+        el.style.display = "block";
+      } else {
+        el.style.display = "none";
+      }
+    }
+
+    var toastTimer = null;
+    function showToast(msg) {
+      var t = document.getElementById("toast");
+      if (!t) return;
+      t.innerText = msg;
+      t.classList.add("show");
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(function() {
+        t.classList.remove("show");
+      }, 2000);
+    }
+  </script>
+</body>
+</html>

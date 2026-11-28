@@ -32,6 +32,7 @@ struct InboundListTemplate {
 struct InboundFormTemplate {
     csrf: String,
     inbound: Option<InboundView>,
+    outbounds: Vec<crate::db::outbound::Outbound>,
     /// Pre-generated 16-hex-char default used when there is no inbound to edit
     /// yet — the form is never shown with an empty shortId, and the random
     /// button next to the input lets the operator re-roll on demand.
@@ -66,6 +67,7 @@ pub struct InboundView {
     pub skip_cert_verify: bool,
     pub udp: bool,
     pub status: String,
+    pub outbound_id: i64,
     pub is_active: bool,
 }
 
@@ -91,6 +93,7 @@ impl From<&Inbound> for InboundView {
             skip_cert_verify: i.skip_cert_verify == 1,
             udp: i.udp == 1,
             status: i.status.clone(),
+            outbound_id: i.outbound_id.unwrap_or(0),
             is_active: i.status == "active",
         }
     }
@@ -136,6 +139,8 @@ pub struct InboundForm {
     pub udp: String,
     #[serde(default = "default_status")]
     pub status: String,
+    #[serde(default)]
+    pub outbound_id: Option<i64>,
 }
 
 fn default_listen_ip() -> String {
@@ -217,7 +222,7 @@ pub use list as show;
 
 /// `GET /admin/inbound/new` — show an empty create form.
 pub async fn new_form(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(_admin): Extension<CurrentAdmin>,
     base_path_ext: Option<Extension<BasePath>>,
     jar: CookieJar,
@@ -225,9 +230,13 @@ pub async fn new_form(
     let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let default_short_id = random_short_id();
     let default_xhttp_path = generate_xhttp_path();
+    let outbounds = crate::db::outbound::list_active_outbounds(&state.pool)
+        .await
+        .unwrap_or_default();
     let html = InboundFormTemplate {
         csrf: csrf_from_cookies(&jar),
         inbound: None,
+        outbounds,
         default_short_id,
         default_xhttp_path,
         error: None,
@@ -264,9 +273,13 @@ pub async fn edit_form(
 
     let default_short_id = random_short_id();
     let default_xhttp_path = generate_xhttp_path();
+    let outbounds = crate::db::outbound::list_active_outbounds(&state.pool)
+        .await
+        .unwrap_or_default();
     let html = InboundFormTemplate {
         csrf: csrf_from_cookies(&jar),
         inbound: Some(InboundView::from(&inbound)),
+        outbounds,
         default_short_id,
         default_xhttp_path,
         error: None,
@@ -372,6 +385,7 @@ async fn handle_save(
         Ok(p) if (1..=65535).contains(&p) => p,
         _ => {
             return render_error(
+                &state,
                 &jar,
                 existing.as_ref(),
                 "端口必须是 1-65535 之间的整数".into(),
@@ -418,10 +432,18 @@ async fn handle_save(
     } else if is_hy2 {
         let sni = form.sni.trim().to_string();
         if sni.is_empty() {
-            return render_error(&jar, existing.as_ref(), "SNI 不能为空".into(), base_path).await;
+            return render_error(
+                &state,
+                &jar,
+                existing.as_ref(),
+                "SNI 不能为空".into(),
+                base_path,
+            )
+            .await;
         }
         if sni.len() > 253 || sni.contains(char::is_whitespace) {
             return render_error(
+                &state,
                 &jar,
                 existing.as_ref(),
                 "SNI 必须是合法主机名".into(),
@@ -435,6 +457,7 @@ async fn handle_save(
         if cert_mode == "custom" {
             if custom_cert_path.is_empty() || custom_key_path.is_empty() {
                 return render_error(
+                    &state,
                     &jar,
                     existing.as_ref(),
                     "自定义证书模式必须填写证书和私钥路径".into(),
@@ -446,6 +469,7 @@ async fn handle_save(
                 || !std::path::Path::new(&custom_key_path).exists()
             {
                 return render_error(
+                    &state,
                     &jar,
                     existing.as_ref(),
                     "指定的证书文件或私钥文件不存在，请检查路径".into(),
@@ -481,16 +505,25 @@ async fn handle_save(
         let dest = match validate_dest(&form.dest).await {
             Ok(d) => d,
             Err(e) => {
-                return render_error(&jar, existing.as_ref(), format!("{e}"), base_path).await
+                return render_error(&state, &jar, existing.as_ref(), format!("{e}"), base_path)
+                    .await
             }
         };
 
         let sni = form.sni.trim().to_string();
         if sni.is_empty() {
-            return render_error(&jar, existing.as_ref(), "SNI 不能为空".into(), base_path).await;
+            return render_error(
+                &state,
+                &jar,
+                existing.as_ref(),
+                "SNI 不能为空".into(),
+                base_path,
+            )
+            .await;
         }
         if sni.len() > 253 || sni.contains(char::is_whitespace) {
             return render_error(
+                &state,
                 &jar,
                 existing.as_ref(),
                 "SNI 必须是合法主机名".into(),
@@ -500,7 +533,7 @@ async fn handle_save(
         }
 
         if let Err(msg) = validate_short_id(&form.short_id) {
-            return render_error(&jar, existing.as_ref(), msg, base_path).await;
+            return render_error(&state, &jar, existing.as_ref(), msg, base_path).await;
         }
         let short_id = form.short_id.trim().to_string();
 
@@ -512,7 +545,7 @@ async fn handle_save(
                 .unwrap_or_else(generate_xhttp_path)
         } else {
             if let Err(msg) = validate_xhttp_path(submitted_path) {
-                return render_error(&jar, existing.as_ref(), msg, base_path).await;
+                return render_error(&state, &jar, existing.as_ref(), msg, base_path).await;
             }
             submitted_path.to_string()
         };
@@ -521,8 +554,14 @@ async fn handle_save(
             Ok(k) => k,
             Err(e) => {
                 tracing::error!(error = %e, "REALITY key generation failed");
-                return render_error(&jar, existing.as_ref(), "密钥生成失败".into(), base_path)
-                    .await;
+                return render_error(
+                    &state,
+                    &jar,
+                    existing.as_ref(),
+                    "密钥生成失败".into(),
+                    base_path,
+                )
+                .await;
             }
         };
 
@@ -564,6 +603,7 @@ async fn handle_save(
     };
     if listen_ip.parse::<std::net::IpAddr>().is_err() {
         return render_error(
+            &state,
             &jar,
             existing.as_ref(),
             format!("监听 IP 地址格式不正确: {listen_ip}"),
@@ -586,7 +626,7 @@ async fn handle_save(
         let other_inbounds: Vec<Inbound> = sqlx::query_as(
             "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                     xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                    port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                    port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
              FROM inbounds WHERE id != ? AND status = 'active'",
         )
         .bind(existing_id)
@@ -609,6 +649,7 @@ async fn handle_save(
                     format!("IP {}", other.listen_ip)
                 };
                 return render_error(
+                    &state,
                     &jar,
                     existing.as_ref(),
                     format!("{conflict_port_desc} 已被 {other_ip_desc} 上的入站占用"),
@@ -625,6 +666,7 @@ async fn handle_save(
                     let other_norm_ip = normalize_ip(&other.listen_ip);
                     if candidate_norm_ip != other_norm_ip {
                         return render_error(
+                            &state,
                             &jar,
                             existing.as_ref(),
                             format!(
@@ -640,13 +682,18 @@ async fn handle_save(
         }
     }
 
+    let outbound_id: Option<i64> = match form.outbound_id {
+        Some(id) if id > 0 => Some(id),
+        _ => None,
+    };
+
     let result = match &existing {
         Some(inbound) => {
             sqlx::query(
                 "UPDATE inbounds SET listen_ip = ?, listen_port = ?, dest = ?, sni = ?, server_name = ?, short_id = ?, \
                         xhttp_path = ?, private_key = ?, public_key = ?, protocol = ?, cert_mode = ?, \
                         custom_cert_path = ?, custom_key_path = ?, masquerade_url = ?, port_range = ?, transport_protocol = ?, \
-                        skip_cert_verify = ?, udp = ?, status = ?, \
+                        skip_cert_verify = ?, udp = ?, status = ?, outbound_id = ?, \
                         updated_at = unixepoch() \
                  WHERE id = ?",
             )
@@ -669,6 +716,7 @@ async fn handle_save(
             .bind(skip_cert_verify)
             .bind(udp)
             .bind(&status)
+            .bind(outbound_id)
             .bind(inbound.id)
             .execute(&state.pool)
             .await
@@ -678,9 +726,9 @@ async fn handle_save(
                 "INSERT INTO inbounds (listen_ip, listen_port, dest, sni, server_name, private_key, \
                         public_key, short_id, xhttp_path, protocol, cert_mode, \
                         custom_cert_path, custom_key_path, masquerade_url, port_range, transport_protocol, \
-                        skip_cert_verify, udp, status, \
+                        skip_cert_verify, udp, status, outbound_id, \
                         created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())",
             )
             .bind(&listen_ip)
             .bind(port)
@@ -701,6 +749,7 @@ async fn handle_save(
             .bind(skip_cert_verify)
             .bind(udp)
             .bind(&status)
+            .bind(outbound_id)
             .execute(&state.pool)
             .await
         }
@@ -713,7 +762,7 @@ async fn handle_save(
             tracing::error!(error = %e, "inbound save failed");
             "保存失败".to_string()
         };
-        return render_error(&jar, existing.as_ref(), msg, base_path).await;
+        return render_error(&state, &jar, existing.as_ref(), msg, base_path).await;
     }
 
     reload(&state).await;
@@ -793,7 +842,7 @@ pub async fn toggle(
         let other_inbounds: Vec<Inbound> = sqlx::query_as(
             "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                     xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                    port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                    port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
              FROM inbounds WHERE id != ? AND status = 'active'",
         )
         .bind(id)
@@ -854,7 +903,7 @@ async fn list_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResult<Vec<I
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
           FROM inbounds WHERE status != 'deleted' ORDER BY id ASC",
     )
     .fetch_all(pool)
@@ -867,7 +916,7 @@ async fn list_active_inbounds(pool: &sqlx::SqlitePool) -> crate::error::AppResul
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
           FROM inbounds WHERE status = 'active' ORDER BY id ASC",
     )
     .fetch_all(pool)
@@ -894,6 +943,7 @@ async fn reload(state: &AppState) {
 }
 
 async fn render_error(
+    state: &AppState,
     jar: &CookieJar,
     inbound: Option<&Inbound>,
     error: String,
@@ -905,9 +955,13 @@ async fn render_error(
     let default_xhttp_path = inbound
         .map(config::effective_xhttp_path)
         .unwrap_or_else(generate_xhttp_path);
+    let outbounds = crate::db::outbound::list_active_outbounds(&state.pool)
+        .await
+        .unwrap_or_default();
     let html = InboundFormTemplate {
         csrf: csrf_from_cookies(jar),
         inbound: inbound.map(InboundView::from),
+        outbounds,
         default_short_id,
         default_xhttp_path,
         error: Some(error),
