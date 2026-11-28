@@ -102,6 +102,7 @@
       <div class="actions">
         <button class="btn btn-primary" type="button" onclick="copyText('sub-url', '订阅地址')">复制订阅地址</button>
         <button class="btn btn-secondary" type="button" onclick="toggleSubQr()">二维码</button>
+        <a class="btn btn-secondary" href="{{ sub_url }}" target="_blank" rel="noopener">网页预览</a>
       </div>
       <div id="sub-qr-box" class="qr-box" style="display:none;">
         <img src="{{ base_path }}{{ sub_qr_path }}" width="220" height="220" alt="Subscription QR">

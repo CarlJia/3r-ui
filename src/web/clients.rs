@@ -426,7 +426,7 @@ pub async fn detail(
     let bound_inbounds: Vec<Inbound> = sqlx::query_as(
         "SELECT i.id, i.listen_ip, i.listen_port, i.dest, i.sni, i.server_name, i.private_key, i.public_key, \
                 i.short_id, i.xhttp_path, i.protocol, i.cert_mode, i.custom_cert_path, i.custom_key_path, \
-                i.masquerade_url, i.port_range, i.transport_protocol, i.skip_cert_verify, i.udp, i.status, i.created_at, i.updated_at \
+                i.masquerade_url, i.port_range, i.transport_protocol, i.skip_cert_verify, i.udp, i.status, i.outbound_id, i.created_at, i.updated_at \
          FROM inbounds i \
          JOIN client_inbounds ci ON ci.inbound_id = i.id \
          WHERE ci.client_id = ? AND i.status = 'active' \
@@ -595,7 +595,7 @@ pub async fn qr_png(
         let inbound = match sqlx::query_as::<_, Inbound>(
             "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                     xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                    port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                    port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
              FROM inbounds WHERE id = ?",
         )
         .bind(ib_id)
@@ -659,7 +659,7 @@ async fn load_active_inbound(pool: &sqlx::SqlitePool) -> crate::error::AppResult
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
     )
     .fetch_optional(pool)
@@ -911,7 +911,7 @@ async fn current_inbound(state: &AppState) -> crate::error::AppResult<Option<Inb
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id LIMIT 1",
     )
     .fetch_optional(&state.pool)
@@ -970,7 +970,7 @@ async fn list_all_active_inbounds(
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
          FROM inbounds WHERE status = 'active' ORDER BY id ASC",
     )
     .fetch_all(pool)

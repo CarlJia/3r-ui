@@ -30,6 +30,7 @@ pub struct Inbound {
     pub skip_cert_verify: i64,
     pub udp: i64,
     pub status: String,
+    pub outbound_id: Option<i64>,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
 }
@@ -222,7 +223,7 @@ pub struct SystemSettings {
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
 pub struct DdnsSettings {
     pub id: i64,
     pub enabled: i64,
@@ -293,7 +294,7 @@ impl DdnsSettings {
 }
 
 /// Cloudflare Tunnels (cloudflared) 守护配置与状态（单例，id = 1）
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
 pub struct TunnelSettings {
     pub id: i64,
     pub enabled: i64,

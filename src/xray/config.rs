@@ -41,6 +41,9 @@ pub const DOMAIN_STRATEGY: &str = "AsIs";
 /// counted), so callers can log or test.
 pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
     let inbounds = active_inbounds(pool).await?;
+    let custom_outbounds = crate::db::outbound::list_active_outbounds(pool)
+        .await
+        .unwrap_or_default();
     let proxy_domain = crate::proxy::config::get_proxy_settings(pool)
         .await
         .ok()
@@ -98,7 +101,31 @@ pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
     // as ordinary traffic — into a loop, since the API inbound points at itself.
     let mut rules = vec![api_routing_rule()];
     rules.push(json!({ "type": "field", "outboundTag": "blocked", "domain": ["geosite:category-ads-all"] }));
+
+    let outbound_map: std::collections::HashMap<i64, &crate::db::outbound::Outbound> =
+        custom_outbounds.iter().map(|o| (o.id, o)).collect();
+
+    for inbound in &inbounds {
+        if let Some(ob_id) = inbound.outbound_id {
+            if let Some(target_ob) = outbound_map.get(&ob_id) {
+                rules.push(json!({
+                    "type": "field",
+                    "inboundTag": [format!("inbound-{}", inbound.id)],
+                    "outboundTag": target_ob.tag
+                }));
+            }
+        }
+    }
+
     rules.push(json!({ "type": "field", "outboundTag": "direct", "network": "tcp,udp" }));
+
+    let mut outbounds_list = vec![
+        json!({ "tag": "direct", "protocol": "freedom", "settings": {} }),
+        json!({ "tag": "blocked", "protocol": "blackhole", "settings": {} }),
+    ];
+    for ob in &custom_outbounds {
+        outbounds_list.push(render_custom_outbound(ob));
+    }
 
     let config = json!({
         // 空字符串是 xray 唯一"写标准输出"的取值（`none` 才是关闭），面板
@@ -121,10 +148,7 @@ pub async fn render(pool: &SqlitePool, config_path: &Path) -> AppResult<usize> {
         },
         "policy": policy(),
         "inbounds": inbound_values,
-        "outbounds": [
-            { "tag": "direct", "protocol": "freedom", "settings": {} },
-            { "tag": "blocked", "protocol": "blackhole", "settings": {} },
-        ],
+        "outbounds": outbounds_list,
         "routing": {
             "rules": rules,
             "domainStrategy": DOMAIN_STRATEGY,
@@ -162,7 +186,7 @@ pub async fn active_inbounds(pool: &SqlitePool) -> AppResult<Vec<Inbound>> {
     sqlx::query_as::<_, Inbound>(
         "SELECT id, listen_ip, listen_port, dest, sni, server_name, private_key, public_key, short_id, \
                 xhttp_path, protocol, cert_mode, custom_cert_path, custom_key_path, masquerade_url, \
-                port_range, transport_protocol, skip_cert_verify, udp, status, created_at, updated_at \
+                port_range, transport_protocol, skip_cert_verify, udp, status, outbound_id, created_at, updated_at \
          FROM inbounds WHERE status = 'active' AND protocol != 'mieru' ORDER BY id",
     )
     .fetch_all(pool)
@@ -477,6 +501,148 @@ fn render_hysteria2_inbound(
     }))
 }
 
+/// Render a custom outbound entry for Xray-core.
+pub fn render_custom_outbound(outbound: &crate::db::outbound::Outbound) -> Value {
+    let protocol = outbound.protocol.trim().to_lowercase();
+    let parsed_settings: Value =
+        serde_json::from_str(&outbound.settings_json).unwrap_or_else(|_| json!({}));
+
+    match protocol.as_str() {
+        "socks" => {
+            let mut server_obj = json!({
+                "address": outbound.server_addr,
+                "port": outbound.server_port,
+            });
+            if let Some(users) = parsed_settings.get("users").and_then(|u| u.as_array()) {
+                server_obj["users"] = json!(users);
+            }
+            json!({
+                "tag": outbound.tag,
+                "protocol": "socks",
+                "settings": {
+                    "servers": [server_obj]
+                }
+            })
+        }
+        "http" => {
+            let mut server_obj = json!({
+                "address": outbound.server_addr,
+                "port": outbound.server_port,
+            });
+            if let Some(users) = parsed_settings.get("users").and_then(|u| u.as_array()) {
+                server_obj["users"] = json!(users);
+            }
+            json!({
+                "tag": outbound.tag,
+                "protocol": "http",
+                "settings": {
+                    "servers": [server_obj]
+                }
+            })
+        }
+        "shadowsocks" => {
+            let method = parsed_settings
+                .get("method")
+                .and_then(|m| m.as_str())
+                .unwrap_or("aes-256-gcm");
+            let password = parsed_settings
+                .get("password")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+            json!({
+                "tag": outbound.tag,
+                "protocol": "shadowsocks",
+                "settings": {
+                    "servers": [
+                        {
+                            "address": outbound.server_addr,
+                            "port": outbound.server_port,
+                            "method": method,
+                            "password": password,
+                        }
+                    ]
+                }
+            })
+        }
+        "vmess" => {
+            let uuid = parsed_settings
+                .get("uuid")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let alter_id = parsed_settings
+                .get("alter_id")
+                .and_then(|a| a.as_i64())
+                .unwrap_or(0);
+            let security = parsed_settings
+                .get("security")
+                .and_then(|s| s.as_str())
+                .unwrap_or("auto");
+            let mut out = json!({
+                "tag": outbound.tag,
+                "protocol": "vmess",
+                "settings": {
+                    "vnext": [
+                        {
+                            "address": outbound.server_addr,
+                            "port": outbound.server_port,
+                            "users": [
+                                {
+                                    "id": uuid,
+                                    "alterId": alter_id,
+                                    "security": security,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            });
+            if let Some(stream) = parsed_settings.get("streamSettings") {
+                out["streamSettings"] = stream.clone();
+            }
+            out
+        }
+        "vless" => {
+            let uuid = parsed_settings
+                .get("uuid")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let encryption = parsed_settings
+                .get("encryption")
+                .and_then(|e| e.as_str())
+                .unwrap_or("none");
+            let mut out = json!({
+                "tag": outbound.tag,
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [
+                        {
+                            "address": outbound.server_addr,
+                            "port": outbound.server_port,
+                            "users": [
+                                {
+                                    "id": uuid,
+                                    "encryption": encryption,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            });
+            if let Some(stream) = parsed_settings.get("streamSettings") {
+                out["streamSettings"] = stream.clone();
+            }
+            out
+        }
+        _ => {
+            json!({
+                "tag": outbound.tag,
+                "protocol": outbound.protocol,
+                "settings": parsed_settings,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +669,7 @@ mod tests {
             skip_cert_verify: 0,
             udp: 1,
             status: "active".into(),
+            outbound_id: None,
             created_at: None,
             updated_at: None,
         }
@@ -702,5 +869,48 @@ mod tests {
         ib.private_key = "".into();
         let err = render_inbound(&ib, &[], Path::new("."), None).unwrap_err();
         assert!(err.to_string().contains("empty privateKey for REALITY"));
+    }
+
+    #[test]
+    fn test_render_custom_outbound_and_routing() {
+        let ob_socks = crate::db::outbound::Outbound {
+            id: 1,
+            tag: "out-socks5".into(),
+            name: "HK Socks5".into(),
+            protocol: "socks".into(),
+            server_addr: "198.51.100.1".into(),
+            server_port: 1080,
+            settings_json: r#"{"users":[{"user":"u1","pass":"p1"}]}"#.into(),
+            status: "active".into(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        let val = render_custom_outbound(&ob_socks);
+        assert_eq!(val["tag"], "out-socks5");
+        assert_eq!(val["protocol"], "socks");
+        assert_eq!(val["settings"]["servers"][0]["address"], "198.51.100.1");
+        assert_eq!(val["settings"]["servers"][0]["port"], 1080);
+        assert_eq!(val["settings"]["servers"][0]["users"][0]["user"], "u1");
+
+        let ob_ss = crate::db::outbound::Outbound {
+            id: 2,
+            tag: "out-ss".into(),
+            name: "JP SS".into(),
+            protocol: "shadowsocks".into(),
+            server_addr: "198.51.100.2".into(),
+            server_port: 8388,
+            settings_json: r#"{"method":"chacha20-ietf-poly1305","password":"mypassword"}"#.into(),
+            status: "active".into(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        let val_ss = render_custom_outbound(&ob_ss);
+        assert_eq!(val_ss["tag"], "out-ss");
+        assert_eq!(val_ss["protocol"], "shadowsocks");
+        assert_eq!(
+            val_ss["settings"]["servers"][0]["method"],
+            "chacha20-ietf-poly1305"
+        );
+        assert_eq!(val_ss["settings"]["servers"][0]["password"], "mypassword");
     }
 }

@@ -581,6 +581,26 @@ impl CloudflareClient {
                 new_ip: clean_ip.to_string(),
             })
         } else {
+            // If attempting to create A or AAAA record, check for an existing CNAME record
+            // (e.g. Cloudflare Tunnel or external alias) to avoid breaking tunnels or triggering 81053 error.
+            if record_type == "A" || record_type == "AAAA" {
+                let cnames = self
+                    .list_dns_records(&zone_id, "CNAME", clean_domain)
+                    .await?;
+                if let Some(cname) = cnames
+                    .into_iter()
+                    .find(|r| r.name.eq_ignore_ascii_case(clean_domain))
+                {
+                    return Ok(DnsSyncOutcome::Skipped {
+                        domain: clean_domain.to_string(),
+                        reason: format!(
+                            "已有 CNAME 记录指向 '{}' (疑似 Cloudflare Tunnel 隧道或别名)，跳过创建 {} 记录以防冲突",
+                            cname.content, record_type
+                        ),
+                    });
+                }
+            }
+
             self.create_dns_record(&zone_id, record_type, clean_domain, clean_ip, proxied, 1)
                 .await?;
             Ok(DnsSyncOutcome::Created {
@@ -752,6 +772,19 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        // No CNAME exists for vps.example.com
+        Mock::given(method("GET"))
+            .and(path("/zones/zone-ddns-123/dns_records"))
+            .and(query_param("type", "CNAME"))
+            .and(query_param("name", "vps.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .mount(&mock_server)
+            .await;
+
         // Create record
         Mock::given(method("POST"))
             .and(path("/zones/zone-ddns-123/dns_records"))
@@ -838,5 +871,58 @@ mod tests {
                 new_ip: "203.0.113.2".to_string()
             }
         );
+
+        // Test CNAME conflict avoidance: if domain has existing CNAME, creating A record is skipped
+        Mock::given(method("GET"))
+            .and(path("/zones"))
+            .and(query_param("name", "tunnel.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones/zone-ddns-123/dns_records"))
+            .and(query_param("type", "A"))
+            .and(query_param("name", "tunnel.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/zones/zone-ddns-123/dns_records"))
+            .and(query_param("type", "CNAME"))
+            .and(query_param("name", "tunnel.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "errors": [],
+                "result": [{
+                    "id": "rec-cname-1",
+                    "type": "CNAME",
+                    "name": "tunnel.example.com",
+                    "content": "abc-tunnel.cfargotunnel.com",
+                    "proxied": true,
+                    "ttl": 1
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let outcome4 = cf
+            .upsert_dns_record("tunnel.example.com", "A", "203.0.113.2", false)
+            .await
+            .unwrap();
+        assert!(matches!(outcome4, DnsSyncOutcome::Skipped { .. }));
+        if let DnsSyncOutcome::Skipped { domain, reason } = outcome4 {
+            assert_eq!(domain, "tunnel.example.com");
+            assert!(reason.contains("abc-tunnel.cfargotunnel.com"));
+        }
     }
 }

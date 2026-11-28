@@ -166,75 +166,6 @@ pub async fn settings_page(
     let effective_host = effective.host;
     let env_public_host = state.config.public_host.clone();
 
-    let ddns = crate::ddns::config::get_ddns_settings(&state.pool)
-        .await
-        .unwrap_or(crate::db::models::DdnsSettings {
-            id: 1,
-            enabled: 0,
-            cf_api_token: String::new(),
-            ipv4_enabled: 1,
-            ipv4_domains: String::new(),
-            ipv6_enabled: 0,
-            ipv6_domains: String::new(),
-            check_interval_mins: 5,
-            cf_proxied: 0,
-            auto_sync_public_host: 1,
-            last_ipv4: String::new(),
-            last_ipv6: String::new(),
-            last_sync_at: 0,
-            last_status: String::new(),
-            updated_at: 0,
-        });
-
-    let ddns_last_sync_time = if ddns.last_sync_at > 0 {
-        format_unix_time(ddns.last_sync_at)
-    } else {
-        "暂无记录".to_string()
-    };
-
-    let tunnel =
-        state
-            .tunnel_supervisor
-            .get_settings()
-            .await
-            .unwrap_or(crate::db::models::TunnelSettings {
-                id: 1,
-                enabled: 0,
-                tunnel_token: String::new(),
-                custom_path: String::new(),
-                last_status: String::new(),
-                updated_at: 0,
-            });
-    let tunnel_status =
-        state
-            .tunnel_supervisor
-            .status()
-            .await
-            .unwrap_or(crate::tunnel::TunnelStatus {
-                installed: false,
-                bin_path: String::new(),
-                running: false,
-                pid: None,
-                last_status: String::new(),
-                logs: Vec::new(),
-            });
-
-    let (ddns_effective_token_masked, ddns_inherited_from_proxy) = if !ddns.cf_api_token.is_empty()
-    {
-        (ddns.masked_token(), false)
-    } else {
-        let proxy_raw = crate::proxy::config::get_proxy_settings(&state.pool).await;
-        if let Ok(proxy) = proxy_raw {
-            if !proxy.cf_api_token.is_empty() {
-                (proxy.masked_cf_token(), true)
-            } else {
-                (String::new(), false)
-            }
-        } else {
-            (String::new(), false)
-        }
-    };
-
     let base_path = base_path_ext.map(|Extension(p)| p.0).unwrap_or_default();
     let form_action = if base_path.is_empty() {
         "/admin/settings/xray/update".to_string()
@@ -251,6 +182,7 @@ pub async fn settings_page(
         data_dir: data_dir.display().to_string(),
         certs_dir,
         xray_version: version_output,
+        app_version: crate::version::APP_VERSION,
         jobs,
         form_action,
         base_path,
@@ -259,12 +191,6 @@ pub async fn settings_page(
         system_settings,
         effective_host,
         env_public_host,
-        ddns,
-        ddns_effective_token_masked,
-        ddns_inherited_from_proxy,
-        ddns_last_sync_time,
-        tunnel,
-        tunnel_status,
     }
     .render()
     .unwrap_or_else(|e| format!("template error: {e}"));
@@ -365,6 +291,7 @@ struct SettingsTemplate {
     data_dir: String,
     certs_dir: String,
     xray_version: String,
+    app_version: &'static str,
     jobs: Vec<JobRowView>,
     form_action: String,
     base_path: String,
@@ -373,12 +300,6 @@ struct SettingsTemplate {
     system_settings: crate::db::models::SystemSettings,
     effective_host: String,
     env_public_host: String,
-    ddns: crate::db::models::DdnsSettings,
-    ddns_effective_token_masked: String,
-    ddns_inherited_from_proxy: bool,
-    ddns_last_sync_time: String,
-    tunnel: crate::db::models::TunnelSettings,
-    tunnel_status: crate::tunnel::TunnelStatus,
 }
 
 #[derive(Template)]
@@ -1195,238 +1116,5 @@ pub async fn cert_file_download(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct DdnsSettingsForm {
-    pub csrf: String,
-    pub enabled: Option<String>,
-    pub cf_api_token: Option<String>,
-    pub ipv4_enabled: Option<String>,
-    pub ipv4_domains: Option<String>,
-    pub ipv6_enabled: Option<String>,
-    pub ipv6_domains: Option<String>,
-    pub check_interval_mins: Option<i64>,
-    pub cf_proxied: Option<String>,
-    pub auto_sync_public_host: Option<String>,
-}
-
-/// `POST /admin/settings/ddns` — save DDNS configuration.
-pub async fn save_ddns_settings(
-    State(state): State<AppState>,
-    Extension(_admin): Extension<CurrentAdmin>,
-    jar: CookieJar,
-    axum::extract::Form(form): axum::extract::Form<DdnsSettingsForm>,
-) -> Response {
-    let expected = csrf_from_cookies(&jar);
-    if !crate::crypto::session::constant_time_eq(&expected, &form.csrf) {
-        return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
-    }
-
-    let enabled = form.enabled.as_deref() == Some("1");
-    let ipv4_enabled = form.ipv4_enabled.as_deref() == Some("1");
-    let ipv6_enabled = form.ipv6_enabled.as_deref() == Some("1");
-    let cf_proxied = form.cf_proxied.as_deref() == Some("1");
-    let auto_sync_public_host = form.auto_sync_public_host.as_deref() == Some("1");
-    let check_interval_mins = form.check_interval_mins.unwrap_or(5).clamp(1, 1440);
-
-    if let Err(e) = crate::ddns::config::update_ddns_settings(
-        &state.pool,
-        enabled,
-        form.cf_api_token.as_deref(),
-        ipv4_enabled,
-        form.ipv4_domains.as_deref().unwrap_or(""),
-        ipv6_enabled,
-        form.ipv6_domains.as_deref().unwrap_or(""),
-        check_interval_mins,
-        cf_proxied,
-        auto_sync_public_host,
-    )
-    .await
-    {
-        tracing::error!(error = %e, "failed to update DDNS settings");
-    } else if enabled {
-        // 保存成功且已启用时立即唤醒后台执行一次同步
-        state.ddns_notifier.notify_sync();
-    }
-
-    Redirect::to("/admin/settings").into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DdnsSyncActionForm {
-    pub csrf: Option<String>,
-}
-
-/// `POST /admin/settings/ddns/sync` — manually trigger DDNS synchronization.
-pub async fn trigger_ddns_sync(
-    State(state): State<AppState>,
-    Extension(_admin): Extension<CurrentAdmin>,
-    jar: CookieJar,
-    form_opt: Option<axum::extract::Form<DdnsSyncActionForm>>,
-) -> Response {
-    let expected = csrf_from_cookies(&jar);
-    if let Some(axum::extract::Form(form)) = form_opt {
-        if let Some(ref csrf) = form.csrf {
-            if !crate::crypto::session::constant_time_eq(&expected, csrf) {
-                return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
-            }
-        }
-    }
-
-    match crate::ddns::runner::perform_ddns_sync(&state.pool).await {
-        Ok(outcomes) => {
-            let settings = crate::ddns::config::get_ddns_settings(&state.pool)
-                .await
-                .ok();
-            axum::Json(serde_json::json!({
-                "status": "ok",
-                "message": settings.as_ref().map(|s| s.last_status.clone()).unwrap_or_else(|| "同步完成".to_string()),
-                "outcomes": outcomes,
-                "settings": settings,
-            }))
-            .into_response()
-        }
-        Err(e) => axum::Json(serde_json::json!({
-            "status": "error",
-            "error": e.to_string(),
-        }))
-        .into_response(),
-    }
-}
-
-/// `GET /admin/settings/ddns/status` — return current DDNS status JSON.
-pub async fn ddns_status_api(
-    State(state): State<AppState>,
-    Extension(_admin): Extension<CurrentAdmin>,
-) -> Response {
-    match crate::ddns::config::get_ddns_settings(&state.pool).await {
-        Ok(settings) => axum::Json(serde_json::json!({
-            "status": "ok",
-            "settings": settings,
-            "masked_token": settings.masked_token(),
-        }))
-        .into_response(),
-        Err(e) => axum::Json(serde_json::json!({
-            "status": "error",
-            "error": e.to_string(),
-        }))
-        .into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SaveTunnelSettingsForm {
-    pub csrf: Option<String>,
-    pub enabled: Option<String>,
-    pub tunnel_token: Option<String>,
-    pub custom_path: Option<String>,
-}
-
-/// `POST /admin/settings/tunnel` — save Cloudflare Tunnel settings and reload supervisor.
-pub async fn save_tunnel_settings(
-    State(state): State<AppState>,
-    Extension(_admin): Extension<CurrentAdmin>,
-    jar: CookieJar,
-    axum::extract::Form(form): axum::extract::Form<SaveTunnelSettingsForm>,
-) -> Response {
-    let expected = csrf_from_cookies(&jar);
-    if let Some(ref csrf) = form.csrf {
-        if !crate::crypto::session::constant_time_eq(&expected, csrf) {
-            return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
-        }
-    }
-
-    let enabled = form.enabled.as_deref() == Some("on")
-        || form.enabled.as_deref() == Some("true")
-        || form.enabled.as_deref() == Some("1");
-    let enabled_int: i64 = if enabled { 1 } else { 0 };
-    let token = form.tunnel_token.unwrap_or_default().trim().to_string();
-    let custom_path = form.custom_path.unwrap_or_default().trim().to_string();
-
-    let res = sqlx::query(
-        "UPDATE tunnel_settings SET enabled = $1, tunnel_token = $2, custom_path = $3, updated_at = unixepoch() WHERE id = 1"
-    )
-    .bind(enabled_int)
-    .bind(&token)
-    .bind(&custom_path)
-    .execute(&state.pool)
-    .await;
-
-    if let Err(e) = res {
-        tracing::error!(error = %e, "failed to update tunnel settings in db");
-    } else {
-        let _ = state
-            .tunnel_tx
-            .send(crate::tunnel::TunnelCommand::Reload)
-            .await;
-    }
-
-    Redirect::to("/admin/settings").into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TunnelActionForm {
-    pub csrf: Option<String>,
-    pub action: Option<String>,
-}
-
-/// `POST /admin/settings/tunnel/action` — restart or stop tunnel daemon.
-pub async fn tunnel_action_api(
-    State(state): State<AppState>,
-    Extension(_admin): Extension<CurrentAdmin>,
-    jar: CookieJar,
-    form_opt: Option<axum::extract::Form<TunnelActionForm>>,
-) -> Response {
-    let expected = csrf_from_cookies(&jar);
-    let mut action = "restart".to_string();
-    if let Some(axum::extract::Form(form)) = form_opt {
-        if let Some(ref csrf) = form.csrf {
-            if !crate::crypto::session::constant_time_eq(&expected, csrf) {
-                return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
-            }
-        }
-        if let Some(act) = form.action {
-            action = act;
-        }
-    }
-
-    let cmd = match action.as_str() {
-        "stop" => crate::tunnel::TunnelCommand::Stop,
-        _ => crate::tunnel::TunnelCommand::Restart,
-    };
-
-    let _ = state.tunnel_tx.send(cmd).await;
-    // 等待 200ms 让 supervisor 响应
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    match state.tunnel_supervisor.status().await {
-        Ok(status) => axum::Json(serde_json::json!({
-            "status": "ok",
-            "tunnel_status": status,
-        }))
-        .into_response(),
-        Err(e) => axum::Json(serde_json::json!({
-            "status": "error",
-            "error": e.to_string(),
-        }))
-        .into_response(),
-    }
-}
-
-/// `GET /admin/settings/tunnel/status` — return current Tunnel status JSON with logs.
-pub async fn tunnel_status_api(
-    State(state): State<AppState>,
-    Extension(_admin): Extension<CurrentAdmin>,
-) -> Response {
-    match state.tunnel_supervisor.status().await {
-        Ok(status) => axum::Json(serde_json::json!({
-            "status": "ok",
-            "tunnel_status": status,
-        }))
-        .into_response(),
-        Err(e) => axum::Json(serde_json::json!({
-            "status": "error",
-            "error": e.to_string(),
-        }))
-        .into_response(),
-    }
-}
+pub use crate::web::ddns::{ddns_status_api, save_ddns_settings, trigger_ddns_sync};
+pub use crate::web::tunnel::{save_tunnel_settings, tunnel_action_api, tunnel_status_api};

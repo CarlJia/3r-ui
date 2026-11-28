@@ -5,8 +5,11 @@
 
 pub mod hy2;
 pub mod mieru;
+pub mod parse;
 pub mod qr;
 pub mod vless;
+
+pub use parse::{parse_outbound_link, ParsedOutbound};
 
 use crate::db::models::Inbound;
 
@@ -56,6 +59,7 @@ mod tests {
             skip_cert_verify: 0,
             udp: 1,
             status: "active".to_string(),
+            outbound_id: None,
             created_at: None,
             updated_at: None,
         }

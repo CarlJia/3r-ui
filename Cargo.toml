@@ -1,6 +1,6 @@
 [package]
 name = "three-r-ui"
-version = "0.1.0"
+version = "0.0.4"
 edition = "2021"
 rust-version = "1.75"
 description = "Self-hosted Rust xray-core management panel"
@@ -24,6 +24,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
+url = "2"
 fs2 = "0.4"
 libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
@@ -31,13 +32,16 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 futures-util = "0.3"
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
 axum-extra = { version = "0.9", features = ["cookie"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "fs"] }
 askama = "0.12"
 bcrypt = "0.15"
 base64 = "0.22"
+sha2 = "0.10"
+hmac = "0.12"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 time = { version = "0.3", features = ["formatting", "macros"] }
 subtle = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }

@@ -29,6 +29,12 @@ pub enum AppError {
 
     #[error("http error: {0}")]
     Http(String),
+
+    #[error("node error: {0}")]
+    Node(String),
+
+    #[error("validation error: {0}")]
+    Validation(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;

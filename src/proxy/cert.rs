@@ -669,6 +669,7 @@ mod tests {
             skip_cert_verify: 0,
             udp: 1,
             status: "active".into(),
+            outbound_id: None,
             created_at: None,
             updated_at: None,
         };
@@ -706,6 +707,7 @@ mod tests {
             skip_cert_verify: 0,
             udp: 1,
             status: "active".into(),
+            outbound_id: None,
             created_at: None,
             updated_at: None,
         };

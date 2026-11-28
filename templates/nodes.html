@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3R-UI 节点管理</title>
+  {% include "theme_head.html" %}
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f6f7f9; color: #1c2024;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #16181d; color: #e6e8eb; }
+      header, .card, .modal-content { background: #1e2126 !important; border-color: #2c3037 !important; }
+      table th, table td { border-color: #2c3037 !important; }
+      .code-box { background: #121417 !important; border-color: #2c3037 !important; color: #60a5fa !important; }
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px; background: #fff; border-bottom: 1px solid #e3e6ea;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: #fff; border: 1px solid #e3e6ea; border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .card h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .btn {
+      padding: 8px 14px; font-size: 13px; font-weight: 600; border: 0;
+      border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #2f6fd8; }
+    .btn-danger { background: #fdecec; color: #a4262c; }
+    .btn-danger:hover { background: #fcd7d7; }
+    .btn-secondary { background: #e8eaed; color: #1c2024; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+    .badge-online { background: #dcfce7; color: #166534; }
+    .badge-offline { background: #fee2e2; color: #991b1b; }
+    .badge-local { background: #e0e7ff; color: #3730a3; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid #e3e6ea; text-align: left; vertical-align: middle; }
+    th { font-size: 12px; opacity: .7; font-weight: 600; }
+    .progress-bar-bg { background: #e5e7eb; border-radius: 4px; height: 6px; width: 80px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }
+    .progress-bar-fill { background: #3b82f6; height: 100%; border-radius: 4px; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+    .modal.open { display: flex; }
+    .modal-content { background: #fff; border-radius: 12px; padding: 24px; max-width: 580px; width: 90%; border: 1px solid #e3e6ea; }
+    .code-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px; word-break: break-all; margin: 12px 0; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    .form-control { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+    {% include "sidebar_style.html" %}
+  </style>
+</head>
+<body>
+  {% include "sidebar_nav.html" %}
+  <div class="content">
+    <header>
+      <h1>🖥️ 节点管理 (分布式 Agent 集群)</h1>
+      <div>
+        <button class="btn btn-secondary" onclick="openGroupModal()">📁 管理分组</button>
+        <button class="btn btn-primary" onclick="openAddNodeModal()">➕ 添加节点</button>
+      </div>
+    </header>
+    <main>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>集群节点概览</h2>
+              <span style="font-size: 12px; opacity: .7;">总计 {{ total_count }} 个节点，当前在线 {{ online_count }} 个</span>
+            </div>
+            <button class="btn btn-secondary" onclick="location.reload()">🔄 刷新状态</button>
+          </div>
+          <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>节点名称</th>
+                <th>地址</th>
+                <th>状态</th>
+                <th>CPU 占用</th>
+                <th>内存占用</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for node in nodes %}
+              <tr>
+                <td>#{{ node.id }}</td>
+                <td>
+                  <strong>{{ node.name }}</strong>
+                  {% if node.is_local == 1 %}
+                  <span class="badge badge-local">本机 Master</span>
+                  {% endif %}
+                </td>
+                <td>{{ node.server_address.as_deref().unwrap_or("-") }}</td>
+                <td>
+                  {% if node.status == "online" %}
+                  <span class="badge badge-online">🟢 在线</span>
+                  {% else %}
+                  <span class="badge badge-offline">🔴 离线</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if let Some(cpu) = node.cpu_percent %}
+                  <div class="progress-bar-bg"><div class="progress-bar-fill" style="width: {{ cpu }}%;"></div></div>
+                  <span>{{ "{:.1}"|format(cpu) }}%</span>
+                  {% else %}
+                  -
+                  {% endif %}
+                </td>
+                <td>
+                  {% if let Some(mem_used) = node.memory_used_bytes %}
+                  <span>{{ mem_used / 1024 / 1024 }} MB</span>
+                  {% else %}
+                  -
+                  {% endif %}
+                </td>
+                <td>
+                  {% if node.is_local == 0 %}
+                  <button class="btn btn-danger" onclick="deleteNode({{ node.id }})">删除</button>
+                  {% else %}
+                  <span style="opacity: .5; font-size: 12px;">受保护</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </main>
+    </div>
+
+  <!-- Add Node Modal -->
+  <div id="addNodeModal" class="modal">
+    <div class="modal-content">
+      <h3 style="margin-top: 0;">一键接入 VPS 子节点</h3>
+      <div class="form-group">
+        <label>节点名称 (可选)</label>
+        <input type="text" id="nodeNameInput" class="form-control" placeholder="如：香港轻量 VPS 01">
+      </div>
+      <div class="form-group">
+        <label>分配分组</label>
+        <select id="groupSelect" class="form-control">
+          <option value="">(无分组 - 默认全部)</option>
+          {% for g in groups %}
+          <option value="{{ g.id }}">{{ g.name }} ({{ g.tag }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="generateInstallCommand()">⚡ 生成一键安装命令</button>
+      
+      <div id="installCommandArea" style="display: none; margin-top: 14px;">
+        <label style="font-weight: 600; font-size: 13px;">请在远端 VPS 终端中以 root 运行以下命令：</label>
+        <div id="commandBox" class="code-box"></div>
+        <button class="btn btn-secondary" onclick="copyCommand()">📋 复制命令</button>
+      </div>
+      <div style="margin-top: 20px; text-align: right;">
+        <button class="btn btn-secondary" onclick="closeAddNodeModal()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const CSRF_TOKEN = "{{ csrf_token }}";
+
+    function openAddNodeModal() {
+      document.getElementById('addNodeModal').classList.add('open');
+    }
+    function closeAddNodeModal() {
+      document.getElementById('addNodeModal').classList.remove('open');
+    }
+    function openGroupModal() {
+      const name = prompt("请输入新分组名称 (如: 香港节点组):");
+      if (!name) return;
+      const tag = prompt("请输入分组 Tag 英文缩写 (如: hk):");
+      if (!tag) return;
+      fetch('{{ base_path }}/admin/node-groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': CSRF_TOKEN },
+        body: JSON.stringify({ name, tag, description: null })
+      }).then(r => r.json()).then(res => {
+        alert("分组创建成功！");
+        location.reload();
+      }).catch(e => alert("创建失败: " + e));
+    }
+
+    async function generateInstallCommand() {
+      const name = document.getElementById('nodeNameInput').value;
+      const groupId = document.getElementById('groupSelect').value;
+      const res = await fetch('{{ base_path }}/admin/nodes/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': CSRF_TOKEN },
+        body: JSON.stringify({ node_name: name || null, group_id: groupId ? parseInt(groupId) : null })
+      });
+      const data = await res.json();
+      document.getElementById('commandBox').textContent = data.install_command;
+      document.getElementById('installCommandArea').style.display = 'block';
+    }
+
+    function copyCommand() {
+      const text = document.getElementById('commandBox').textContent;
+      navigator.clipboard.writeText(text).then(() => alert("安装命令已复制到剪贴板！"));
+    }
+
+    async function deleteNode(id) {
+      if (!confirm("确定要删除该节点吗？关联的在线连接将被切断。")) return;
+      const res = await fetch(`{{ base_path }}/admin/nodes/${id}/delete`, {
+        method: 'POST',
+        headers: { 'x-csrf-token': CSRF_TOKEN }
+      });
+      if (res.ok) {
+        location.reload();
+      } else {
+        alert("删除失败");
+      }
+    }
+  </script>
+</body>
+</html>

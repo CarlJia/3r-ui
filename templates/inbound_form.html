@@ -269,6 +269,20 @@
           <p class="hint">当未经认证的探测或 HTTP 请求访问该 UDP 端口时，自动反向代理到该伪装网站。可双击输入框选择候选，或点击【自动优选】随机选填高信誉伪装站。</p>
         </div>
 
+        <!-- 链式出站代理 -->
+        <div style="margin-top: 14px;">
+          <label for="outbound_id">出站路由 / 链式代理 (Proxy Chaining)</label>
+          <select id="outbound_id" name="outbound_id">
+            <option value="0" {% match inbound %}{% when Some with (i) %}{% if i.outbound_id == 0 %}selected{% endif %}{% when None %}selected{% endmatch %}>直连出站 (Direct - 默认)</option>
+            {% for ob in outbounds %}
+            <option value="{{ ob.id }}" {% match inbound %}{% when Some with (i) %}{% if i.outbound_id == ob.id %}selected{% endif %}{% when None %}{% endmatch %}>
+              [{{ ob.protocol }}] {{ ob.name }} ({{ ob.tag }} -> {{ ob.server_addr }}:{{ ob.server_port }})
+            </option>
+            {% endfor %}
+          </select>
+          <p class="hint">若指定出站节点，流量经由本入站后将自动中继转发至该外部节点出站（实现链式代理）。</p>
+        </div>
+
         <div class="actions" style="margin-top:16px;">
           <button class="btn-primary" type="submit">保存并重载</button>
           <a class="btn btn-secondary" href="{{ base_path }}/admin/inbound">返回列表</a>

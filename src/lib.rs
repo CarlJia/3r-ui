@@ -5,11 +5,13 @@ pub mod ddns;
 pub mod error;
 pub mod mieru;
 pub mod net;
+pub mod node;
 pub mod proxy;
 pub mod quota;
 pub mod security;
 pub mod share;
 pub mod tunnel;
+pub mod version;
 pub mod web;
 pub mod xray;
 
@@ -32,6 +34,7 @@ pub struct Services {
     pub mieru_tx: mpsc::Sender<mieru::MieruCommand>,
     pub tunnel_tx: mpsc::Sender<tunnel::TunnelCommand>,
     pub tunnel_supervisor: Arc<tunnel::CloudflaredSupervisor>,
+    pub node_manager: Arc<node::NodeManager>,
     shutdown_initiated: Arc<std::sync::atomic::AtomicBool>,
     supervisor_handle: tokio::task::JoinHandle<()>,
     http_handle: tokio::task::JoinHandle<()>,
@@ -69,6 +72,7 @@ impl Services {
         self.http_handle.abort();
         self.mieru_handle.abort();
         self.tunnel_handle.abort();
+        self.node_manager.shutdown();
     }
 }
 
@@ -162,6 +166,9 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
     ));
     let tunnel_handle = tokio::spawn(tunnel_supervisor.clone().run(tunnel_rx));
 
+    let node_manager = Arc::new(node::NodeManager::new(pool.clone()));
+    let _node_watchdog_handle = node_manager.start_watchdog();
+
     let app_state = web::AppState {
         config: config.clone(),
         pool: pool.clone(),
@@ -175,6 +182,7 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         cert_tracker,
         system_tracker: Arc::new(web::system::SystemTracker::new()),
         ddns_notifier,
+        node_manager: node_manager.clone(),
         shutdown_initiated: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     // Clone the Arc handle for Services::shutdown before app_state is moved into the async block.
@@ -188,7 +196,12 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
             }
         };
         tracing::info!(addr = %bind_addr, "HTTP server listening");
-        if let Err(e) = axum::serve(listener, web::router(app_state)).await {
+        if let Err(e) = axum::serve(
+            listener,
+            web::router(app_state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
             tracing::error!(error = %e, "HTTP server exited with error");
         }
     });
@@ -234,6 +247,7 @@ pub async fn start_services(config: AppConfig) -> AppResult<Services> {
         mieru_tx,
         tunnel_tx,
         tunnel_supervisor,
+        node_manager,
         shutdown_initiated,
         supervisor_handle,
         http_handle,
